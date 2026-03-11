@@ -1,0 +1,17 @@
+services:
+  mesh-health-check:
+    pull_policy: build
+    build:
+      context: .
+      dockerfile: Dockerfile
+      no_cache: true
+    container_name: mesh-health-check
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      PORT: "3090"
+    volumes:
+      - ./observer.json:/app/observer.json
+    ports:
+      - "3090:3090"

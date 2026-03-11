@@ -1,0 +1,117 @@
+# How To Run Mesh Health Check
+
+## Purpose
+
+Mesh Health Check measures how well a MeshCore `GroupText` message reaches your
+observer network. The app generates a short code, waits for that code to appear
+in the configured channel, then scores coverage based on the observer set for
+that code.
+
+It does not transmit anything. It only watches MQTT, matches messages, and
+summarizes observer coverage.
+
+## Requirements
+
+- Docker and Docker Compose
+- network access to the MQTT broker
+- a valid MeshCore channel name and secret
+- optional observer name mappings in
+  [observer.json](/home/yellowcooln/mesh-health-check/observer.json)
+
+## Setup
+
+1. Copy the template:
+
+```bash
+cp .env.example .env
+```
+
+2. Edit [`.env`](/home/yellowcooln/mesh-health-check/.env):
+
+- set MQTT connectivity
+- set `TEST_CHANNEL_NAME`
+- set `TEST_CHANNEL_SECRET`
+- set `KNOWN_OBSERVERS` if you want a fixed default scoring set
+- enable Turnstile if the site is internet-facing
+- leave `LOG_LEVEL=info` unless you are actively troubleshooting
+
+3. Start the service:
+
+```bash
+docker compose up -d --build
+```
+
+4. Put it behind your reverse proxy or use `http://localhost:3090`.
+
+## What Users See
+
+1. The user opens the site.
+2. If Turnstile is enabled, the user solves the challenge on `/`.
+3. The dashboard loads and creates a code.
+4. The user sends that code to the configured channel.
+5. The app waits for a matching channel message and then aggregates receipts for
+   the same message hash.
+6. The dashboard shows health, observer-by-observer receipts, and path detail.
+
+Users can either:
+
+- use the default observer set from `KNOWN_OBSERVERS`
+- pick a custom observer set in the browser for the next code only
+
+## Result Meaning
+
+- `VERY HEALTHY`: most target observers saw the packet
+- `GOOD` or `FAIR`: partial target coverage
+- `POOR`: very limited coverage or no receipts yet
+
+Each code:
+- expires after `SESSION_TTL_SECONDS`
+- can be used up to `MAX_USES_PER_CODE` times
+- keeps prior results only in the current browser session
+
+## Observer Naming
+
+The app loads
+[observer.json](/home/yellowcooln/mesh-health-check/observer.json) at startup
+so known names are available immediately. If MQTT metadata later publishes a
+better name, the server writes it back to that file.
+
+Without `observer.json`, unnamed observers show as shortened pubkeys until
+metadata propagates.
+
+## Why Turnstile Is Highly Recommended
+
+If the site is public, bots can create codes just like real users. Rate limits
+help, but Turnstile is still the cleanest first line of defense.
+
+Turnstile reduces:
+
+- automated session creation
+- junk traffic against the landing page and session endpoint
+- abuse of a public health-check surface backed by your observer mesh
+
+If the site is private and reachable only on an internal network, Turnstile is
+optional. If the site is public, it should be enabled.
+
+## Operational Notes
+
+- The app only decodes the configured test channel.
+- Default observer scoring comes from `KNOWN_OBSERVERS` if set, otherwise from
+  the active observer window.
+- [observer.json](/home/yellowcooln/mesh-health-check/observer.json) is
+  bind-mounted so learned names survive rebuilds.
+- Port `3090` should stay private to your reverse proxy or internal network.
+- `LOG_LEVEL=debug` is useful only when you are tracing MQTT ingest or decode
+  problems.
+
+## Troubleshooting
+
+- `MQTT offline`: check broker settings and credentials in `.env`
+- `WAITING` forever: verify the code was sent to the correct channel and that
+  the message reached MQTT
+- raw pubkeys instead of names: add mappings to `observer.json` or wait for
+  metadata to propagate
+- Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key
+- Turnstile always fails: verify the hostname is allowed in Cloudflare
+- low scores: the packet may have had limited reach, or your default target set
+  may be stricter than the currently active observer window

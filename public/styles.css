@@ -1,0 +1,555 @@
+:root {
+  --bg: #101512;
+  --panel: rgba(23, 31, 27, 0.92);
+  --panel-strong: rgba(31, 42, 36, 0.98);
+  --panel-soft: rgba(255, 255, 255, 0.04);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #eff5ef;
+  --muted: #a7b6aa;
+  --accent: #e6b64a;
+  --accent-strong: #ffcc63;
+  --good: #6fd96a;
+  --fair: #d7b84f;
+  --poor: #f07d60;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  --radius: 26px;
+  font-family: InterVariable, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(230, 182, 74, 0.2), transparent 28%),
+    radial-gradient(circle at 85% 15%, rgba(111, 217, 106, 0.16), transparent 22%),
+    linear-gradient(160deg, #0b0f0c 0%, #121a16 52%, #1a231e 100%);
+  color: var(--text);
+}
+
+.shell {
+  width: min(1220px, calc(100vw - 32px));
+  margin: 0 auto;
+  padding: 36px 0 52px;
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr;
+  gap: 24px;
+  align-items: stretch;
+}
+
+.hero-copy,
+.hero-card,
+.panel,
+.metric-card,
+.receipt-card,
+.history-item,
+.observer-pill {
+  min-width: 0;
+}
+
+.eyebrow,
+.panel-label,
+.meta-label,
+.small-note {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.hero h1,
+.panel h2 {
+  margin: 0;
+  font-family: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hero h1 {
+  font-size: clamp(2.2rem, 5.4vw, 3.7rem);
+  max-width: 12ch;
+  text-wrap: balance;
+}
+
+.lede {
+  max-width: 52ch;
+  color: #d9e4db;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.hero-card,
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(18px);
+}
+
+.hero-card {
+  padding: 22px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 290px;
+}
+
+.hero-topline,
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.panel-header.slim {
+  align-items: center;
+}
+
+.pill,
+.ghost-button {
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.pill.online {
+  color: var(--good);
+  border-color: rgba(111, 217, 106, 0.35);
+}
+
+.ghost-button {
+  appearance: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 10px 14px;
+  font-weight: 700;
+}
+
+.ghost-button:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ghost-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.session-code {
+  margin: 18px 0 10px;
+  padding: 18px 20px;
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(230, 182, 74, 0.16), rgba(255, 255, 255, 0.03)),
+    rgba(255, 255, 255, 0.02);
+  font-family: "Courier New", monospace;
+  font-size: clamp(1.75rem, 4vw, 2.55rem);
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.05;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.session-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.copy-button {
+  margin-top: 18px;
+  min-width: 88px;
+}
+
+.session-instructions,
+.message-preview p,
+.receipt-meta,
+.receipt-path,
+.history-item p,
+.small-note {
+  color: var(--muted);
+}
+
+.session-meta,
+.score-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.session-meta {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.dashboard {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 24px;
+}
+
+.panel {
+  padding: 22px;
+}
+
+.panel-divider {
+  height: 1px;
+  margin: 18px 0;
+  background: var(--line);
+}
+
+.score-panel {
+  grid-column: span 7;
+}
+
+.panel:not(.score-panel):not(.wide) {
+  grid-column: span 5;
+}
+
+.panel.wide {
+  grid-column: 1 / -1;
+}
+
+.score-ring {
+  width: 112px;
+  height: 112px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at center, rgba(16, 21, 18, 0.95) 50%, transparent 52%),
+    conic-gradient(var(--accent-strong) 0deg, rgba(255, 255, 255, 0.08) 0deg);
+  border: 1px solid var(--line);
+  font-family: "Courier New", monospace;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.score-grid {
+  margin-top: 20px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.metric-card,
+.history-item,
+.receipt-card {
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.metric-card {
+  padding: 14px;
+}
+
+.metric-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.metric-card strong,
+.receipt-title,
+.history-item strong {
+  display: block;
+  font-size: 1.05rem;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message-preview {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+
+.observer-selector,
+.observer-badges,
+.history-list,
+.receipts {
+  display: grid;
+  gap: 12px;
+}
+
+.observer-selector {
+  max-height: 280px;
+  margin-top: 14px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.observer-badges {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 18px;
+}
+
+.allowlist-note {
+  margin-top: 12px;
+}
+
+.observer-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+}
+
+.observer-option input {
+  margin-top: 2px;
+}
+
+.observer-option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.observer-option-copy strong,
+.observer-option-copy span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.observer-option-copy span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.observer-option.active {
+  border-color: rgba(111, 217, 106, 0.24);
+}
+
+.observer-option.inactive {
+  opacity: 0.76;
+}
+
+.observer-pill {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.observer-pill > div,
+.history-item > div,
+.receipt-head > div,
+.panel-header > div {
+  min-width: 0;
+}
+
+.observer-pill strong,
+.observer-pill .small-note,
+.history-item p,
+.history-item .history-code,
+.session-instructions,
+#session-status,
+#session-hash,
+#sender-name,
+#channel-name,
+#broker-name,
+#message-preview {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.observer-main {
+  min-width: 0;
+}
+
+.observer-label {
+  display: block;
+  font-size: 0.96rem;
+  line-height: 1.35;
+}
+
+.observer-hash {
+  margin-top: 4px;
+}
+
+.observer-pill.seen {
+  border-color: rgba(111, 217, 106, 0.32);
+  background: rgba(111, 217, 106, 0.08);
+}
+
+.observer-pill.waiting {
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.observer-pill .status {
+  align-self: center;
+  white-space: nowrap;
+  font-family: "Courier New", monospace;
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.receipts {
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  margin-top: 18px;
+}
+
+.receipt-card,
+.history-item {
+  padding: 16px;
+}
+
+.receipt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.receipt-title {
+  margin: 0;
+}
+
+.receipt-hash {
+  font-family: "Courier New", monospace;
+  color: var(--accent);
+  font-size: 0.8rem;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.receipt-path {
+  margin: 12px 0 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.22);
+  font-family: "Courier New", monospace;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.empty-state {
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px dashed rgba(255, 255, 255, 0.14);
+  border-radius: 18px;
+  color: var(--muted);
+}
+
+.empty-state.compact {
+  margin-top: 0;
+  padding: 14px;
+}
+
+.hidden {
+  display: none !important;
+}
+
+.history-list {
+  margin-top: 18px;
+}
+
+.history-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.history-item .history-code {
+  font-family: "Courier New", monospace;
+  color: var(--accent);
+}
+
+.status-good {
+  color: var(--good);
+}
+
+.status-fair {
+  color: var(--fair);
+}
+
+.status-poor {
+  color: var(--poor);
+}
+
+@media (max-width: 960px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .score-panel,
+  .panel:not(.score-panel):not(.wide),
+  .panel.wide {
+    grid-column: 1 / -1;
+  }
+
+  .score-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .shell {
+    width: min(100vw - 20px, 100%);
+    padding-top: 18px;
+  }
+
+  .hero-card,
+  .panel {
+    padding: 18px;
+  }
+
+  .score-grid,
+  .session-meta,
+  .session-code-row {
+    grid-template-columns: 1fr;
+  }
+
+  .score-ring {
+    width: 88px;
+    height: 88px;
+    font-size: 1.1rem;
+  }
+
+  .hero-topline,
+  .panel-header {
+    gap: 12px;
+  }
+
+  .history-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

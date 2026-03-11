@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="darkreader-lock">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>__APP_HTML_TITLE__</title>
+    <meta name="description" content="__APP_META_DESCRIPTION__">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="__APP_META_TITLE__">
+    <meta property="og:description" content="__APP_META_DESCRIPTION__">
+    <meta property="og:url" content="__APP_META_URL__">
+    <meta property="og:image" content="__APP_META_IMAGE__">
+    <meta property="og:image:alt" content="__APP_META_TITLE__">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="__APP_META_TITLE__">
+    <meta name="twitter:description" content="__APP_META_DESCRIPTION__">
+    <meta name="twitter:image" content="__APP_META_IMAGE__">
+    <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow" id="hero-eyebrow">MeshCore Observer Coverage</p>
+          <h1 id="hero-title">Check your mesh reach.</h1>
+          <p class="lede">
+            <span id="hero-description-prefix">Generate a test code, send it to</span>
+            <strong id="hero-channel">#health-check</strong>
+            <span id="hero-description-suffix">and watch the observers that receive the message report back in real time.</span>
+          </p>
+        </div>
+        <div class="hero-card" id="session-card">
+          <div class="hero-topline">
+            <span class="pill" id="mqtt-pill">MQTT offline</span>
+            <button class="ghost-button" id="new-session-button" type="button">
+              New Code
+            </button>
+          </div>
+          <div class="session-code-row">
+            <div class="session-code" id="session-code">...</div>
+            <button class="ghost-button copy-button" id="copy-session-code" type="button">
+              Copy
+            </button>
+          </div>
+          <p class="session-instructions" id="session-instructions">
+            Loading session…
+          </p>
+          <div class="session-meta">
+            <div>
+              <span class="meta-label">Status</span>
+              <strong id="session-status">Waiting</strong>
+            </div>
+            <div>
+              <span class="meta-label">Message Hash</span>
+              <strong id="session-hash">Pending</strong>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="dashboard">
+        <article class="panel score-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-label">Current Health</p>
+              <h2 id="health-label">Waiting</h2>
+            </div>
+            <div class="score-ring">
+              <span id="health-percent">0%</span>
+            </div>
+          </div>
+          <div class="score-grid">
+            <div class="metric-card">
+              <span class="metric-label">Observers Reached</span>
+              <strong id="observed-count">0 / 0</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Sender</span>
+              <strong id="sender-name">Pending</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Channel</span>
+              <strong id="channel-name">#health-check</strong>
+            </div>
+            <div class="metric-card">
+              <span class="metric-label">Broker</span>
+              <strong id="broker-name">Loading</strong>
+            </div>
+          </div>
+          <div class="message-preview">
+            <span class="meta-label">Matched Message</span>
+            <p id="message-preview">Waiting for your #health-check message.</p>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Observer Set</p>
+              <h2>Observers</h2>
+            </div>
+            <button class="ghost-button" id="observer-allowlist-clear" type="button">
+              Default Set
+            </button>
+          </div>
+          <p class="small-note allowlist-note" id="observer-allowlist-note">
+            Default: 0 observers.
+          </p>
+          <div class="observer-selector" id="observer-allowlist"></div>
+          <div class="panel-divider"></div>
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Target</p>
+              <h2>Score Against</h2>
+            </div>
+            <p class="small-note" id="expected-source">Default</p>
+          </div>
+          <div class="observer-badges" id="expected-observers"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Observer Reports</p>
+              <h2>Who saw the message</h2>
+            </div>
+            <p class="small-note" id="active-observer-note">0 active observers</p>
+          </div>
+          <div class="empty-state" id="receipts-empty">
+            No observer reports yet.
+          </div>
+          <div class="receipts" id="receipts"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
+              <p class="panel-label">Recent Sessions</p>
+              <h2>Previous checks</h2>
+            </div>
+          </div>
+          <div class="history-list" id="session-history"></div>
+        </article>
+      </section>
+    </main>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
