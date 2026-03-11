@@ -1798,6 +1798,35 @@ app.use((request, response, next) => {
   }
   next();
 });
+app.get('/manifest.webmanifest', (request, response) => {
+  const title = APP_TITLE || 'Mesh Health Check';
+  const shortName = title.length <= 12 ? title : title.slice(0, 12);
+  response.type('application/manifest+json').send(JSON.stringify({
+    name: title,
+    short_name: shortName,
+    description: APP_DESCRIPTION,
+    start_url: '/',
+    scope: '/',
+    display: 'standalone',
+    display_override: ['standalone', 'minimal-ui'],
+    background_color: '#101512',
+    theme_color: '#101512',
+    icons: [
+      {
+        src: '/logo.png',
+        sizes: '192x192',
+        type: 'image/png',
+        purpose: 'any',
+      },
+      {
+        src: '/logo.png',
+        sizes: '512x512',
+        type: 'image/png',
+        purpose: 'any maskable',
+      },
+    ],
+  }));
+});
 app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leaflet/dist'), { index: false }));
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 

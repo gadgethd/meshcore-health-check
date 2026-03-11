@@ -18,6 +18,7 @@ The idea for this app came from Nick D from Boston.
 - observer-by-observer receipt tracking with path, RSSI, SNR, and duration data
 - observer timeline view showing when each observer first saw the message
 - observer coverage map with dark/light basemap toggle
+- installable browser app support via manifest + service worker
 - default observer target sets plus browser-side custom observer selection
 - persistent observer profiles through
   [observer.json](/home/yellowcooln/mesh-health-check/observer.json)
@@ -48,7 +49,7 @@ Each code:
   MQTT ingest, session matching, observer persistence, Turnstile verification,
   WebSocket updates
 - [public/](/home/yellowcooln/mesh-health-check/public): dashboard, landing
-  page, browser logic, and styles
+  page, browser logic, service worker, and styles
 - [observer.json](/home/yellowcooln/mesh-health-check/observer.json):
   persistent observer public-key profile map with `name`, `lat`, and `lon`
 - [`.env.example`](/home/yellowcooln/mesh-health-check/.env.example): deployment
@@ -97,6 +98,8 @@ Important behavior:
 - `observer.json` is loaded at boot and updated when new observer names or
   coordinates are learned from MQTT metadata.
 - The dashboard map only plots observers that have saved coordinates.
+- supported browsers can install the site as a standalone app from the
+  dashboard.
 
 ## Run It
 
@@ -124,6 +127,8 @@ If Turnstile is enabled:
   analyzer when a hash is available.
 - The coverage map defaults to dark tiles and can be toggled to light tiles in
   the UI.
+- Browsers that support PWA installation will show an `Install App` button in
+  the dashboard.
 - The footer always links back to the project repository.
 - The optional hero link only appears when `EXTERNAL_LINK_URL` is configured.
 

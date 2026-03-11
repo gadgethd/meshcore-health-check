@@ -81,6 +81,17 @@ test('GET /app includes server-rendered social meta tags', async () => {
   assert.match(html, /<meta name="twitter:title" content="Boston MeshCore Observer Coverage">/);
 });
 
+test('GET /manifest.webmanifest returns installable app metadata', async () => {
+  const response = await fetch(`${baseUrl}/manifest.webmanifest`);
+  assert.equal(response.status, 200);
+
+  const payload = await response.json();
+  assert.equal(payload.name, 'Boston MeshCore Observer Coverage');
+  assert.equal(payload.display, 'standalone');
+  assert.equal(payload.start_url, '/');
+  assert.equal(payload.icons[0].src, '/logo.png');
+});
+
 test('POST /api/sessions creates a session and GET returns it', async () => {
   const createResponse = await fetch(`${baseUrl}/api/sessions`, {
     method: 'POST',
