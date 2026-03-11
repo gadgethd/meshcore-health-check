@@ -1,6 +1,6 @@
 # Changes
 
-## v1.2.0
+## v1.1
 
 - added observer coverage map with dark mode by default and a light-map toggle
 - observer markers now show green for observers that saw the matched message and red for observers that did not
