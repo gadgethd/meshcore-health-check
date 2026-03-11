@@ -8,14 +8,22 @@ message hash.
 
 The idea for this app came from Nick D from Boston.
 
+![Coverage example 1](image1.png)
+![Coverage example 2](image2.png)
+![Coverage example 3](image3.png)
+
 ## Features
 
 - short-lived reusable test codes with expiry and per-code use limits
 - observer-by-observer receipt tracking with path, RSSI, SNR, and duration data
+- observer timeline view showing when each observer first saw the message
+- observer coverage map with dark/light basemap toggle
 - default observer target sets plus browser-side custom observer selection
-- persistent observer naming through
+- persistent observer profiles through
   [observer.json](/home/yellowcooln/mesh-health-check/observer.json)
+- MQTT-learned observer locations saved back into `observer.json`
 - Cloudflare Turnstile landing page for bot protection
+- optional external hero link driven by env
 - Docker-first deployment behind Nginx or Cloudflare
 - fixture, API, and smoke-test coverage in CI
 
@@ -42,7 +50,7 @@ Each code:
 - [public/](/home/yellowcooln/mesh-health-check/public): dashboard, landing
   page, browser logic, and styles
 - [observer.json](/home/yellowcooln/mesh-health-check/observer.json):
-  persistent observer public-key to display-name map
+  persistent observer public-key profile map with `name`, `lat`, and `lon`
 - [`.env.example`](/home/yellowcooln/mesh-health-check/.env.example): deployment
   config template
 - [HOWTO.md](/home/yellowcooln/mesh-health-check/HOWTO.md): setup and operator
@@ -61,7 +69,7 @@ Key groups:
 
 - App:
   `PORT`, `APP_TITLE`, `APP_EYEBROW`, `APP_HEADLINE`, `APP_DESCRIPTION`,
-  `LOG_LEVEL`, `TRUST_PROXY`
+  `EXTERNAL_LINK_URL`, `EXTERNAL_LINK_LABEL`, `LOG_LEVEL`, `TRUST_PROXY`
 - MQTT:
   `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_TOPIC`,
   `MQTT_TRANSPORT`, `MQTT_WS_PATH`, `MQTT_TLS`, optional `MQTT_URL`
@@ -86,8 +94,9 @@ Important behavior:
 - If `KNOWN_OBSERVERS` is blank, the default target falls back to observers
   active in the configured time window.
 - Users can override the default target in the browser for each new code.
-- `observer.json` is loaded at boot and updated when new observer names are
-  learned from MQTT metadata.
+- `observer.json` is loaded at boot and updated when new observer names or
+  coordinates are learned from MQTT metadata.
+- The dashboard map only plots observers that have saved coordinates.
 
 ## Run It
 
@@ -108,6 +117,15 @@ If Turnstile is enabled:
 - Leave `TRUST_PROXY=1` when running behind Nginx or Cloudflare.
 - The app only decodes the configured test channel and ignores all other
   channel traffic on the same MQTT topic.
+
+## UI Notes
+
+- The message hash in the active session card links directly to the packet
+  analyzer when a hash is available.
+- The coverage map defaults to dark tiles and can be toggled to light tiles in
+  the UI.
+- The footer always links back to the project repository.
+- The optional hero link only appears when `EXTERNAL_LINK_URL` is configured.
 
 ## Decoder Note
 

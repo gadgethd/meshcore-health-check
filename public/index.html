@@ -17,6 +17,7 @@
     <meta name="twitter:description" content="__APP_META_DESCRIPTION__">
     <meta name="twitter:image" content="__APP_META_IMAGE__">
     <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
@@ -34,9 +35,12 @@
         <div class="hero-card" id="session-card">
           <div class="hero-topline">
             <span class="pill" id="mqtt-pill">MQTT offline</span>
-            <button class="ghost-button" id="new-session-button" type="button">
-              New Code
-            </button>
+            <div class="hero-actions">
+              <a class="ghost-button hidden" href="#" id="external-link" rel="noopener noreferrer" target="_blank">External Link</a>
+              <button class="ghost-button" id="new-session-button" type="button">
+                New Code
+              </button>
+            </div>
           </div>
           <div class="session-code-row">
             <div class="session-code" id="session-code">...</div>
@@ -54,7 +58,7 @@
             </div>
             <div>
               <span class="meta-label">Message Hash</span>
-              <strong id="session-hash">Pending</strong>
+              <strong><a class="hash-link pending" id="session-hash" href="#" rel="noopener noreferrer" target="_blank">Pending</a></strong>
             </div>
           </div>
         </div>
@@ -123,10 +127,44 @@
         <article class="panel wide">
           <div class="panel-header slim">
             <div>
+              <p class="panel-label">Coverage Map</p>
+              <h2>Where the observers are</h2>
+            </div>
+            <button class="ghost-button" id="map-theme-toggle" type="button">
+              Light Map
+            </button>
+          </div>
+          <p class="small-note" id="map-observer-note">Waiting for observer coordinates.</p>
+          <div class="empty-state compact hidden" id="map-empty">
+            No saved observer coordinates yet. The app will learn them from MQTT metadata and store them in <code>observer.json</code>.
+          </div>
+          <div class="observer-map" id="observer-map"></div>
+        </article>
+
+        <article class="panel wide">
+          <div class="panel-header slim">
+            <div>
               <p class="panel-label">Observer Reports</p>
               <h2>Who saw the message</h2>
             </div>
             <p class="small-note" id="active-observer-note">0 active observers</p>
+          </div>
+          <div class="timeline-block">
+            <div class="panel-header slim">
+              <div>
+                <p class="panel-label">Timeline</p>
+                <h3>When each observer saw it</h3>
+              </div>
+              <p class="small-note" id="timeline-summary">Waiting for observer reports</p>
+            </div>
+            <div class="timeline-scale hidden" id="timeline-scale">
+              <span id="timeline-start-label">First receipt</span>
+              <span id="timeline-end-label">Latest receipt</span>
+            </div>
+            <div class="empty-state compact" id="receipt-timeline-empty">
+              Timeline appears after the first observer report.
+            </div>
+            <div class="receipt-timeline" id="receipt-timeline"></div>
           </div>
           <div class="empty-state" id="receipts-empty">
             No observer reports yet.
@@ -144,8 +182,15 @@
           <div class="history-list" id="session-history"></div>
         </article>
       </section>
+      <footer class="site-footer">
+        <p class="small-note">
+          Source:
+          <a href="https://github.com/yellowcooln/meshcore-health-check" id="repo-note-link" rel="noopener noreferrer" target="_blank">yellowcooln/meshcore-health-check</a>
+        </p>
+      </footer>
     </main>
 
+    <script src="/vendor/leaflet/leaflet.js" defer></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

@@ -7,14 +7,14 @@
   WebSocket broadcast.
 - `public/`: standalone frontend assets.
   - `index.html`: dashboard shell
-  - `app.js`: dashboard state, observer selection, API calls, WebSocket updates,
-    rendering
+  - `app.js`: dashboard state, observer selection, coverage map, receipt
+    timeline, API calls, WebSocket updates, rendering
   - `styles.css`: dashboard layout and responsive styling
   - `landing.html`, `landing.css`, `turnstile-landing.js`: Turnstile landing flow
 - `.env` and `.env.example`: the only runtime configuration source for this
   repo.
-- `observer.json`: persistent observer public-key to node-name map, mounted
-  into the container and updated by the server.
+- `observer.json`: persistent observer public-key profile map with `name`,
+  `lat`, and `lon`, mounted into the container and updated by the server.
 - `README.md`: architecture and flow overview.
 - `HOWTO.md`: deployment and operator guide.
 - `CHANGES.md`: versioned project change log.
@@ -42,6 +42,8 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
   parsing, rate limiting, and Turnstile verification.
 - Keep MQTT packet handling scoped to the configured test channel only.
 - Keep UI changes consistent with the existing single-page flow.
+- Prefer learning observer metadata from MQTT and persisting it into
+  `observer.json` instead of introducing new external runtime lookups.
 
 ## Testing Guidelines
 
@@ -53,8 +55,12 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 - confirm `curl -s http://localhost:3090/api/bootstrap`
 - confirm observer names resolve from `observer.json` before fresh MQTT metadata
   arrives
+- confirm observer coordinates resolve from `observer.json` or MQTT metadata if
+  map behavior changes
 - confirm session creation still works, including default and custom observer
   sets
+- confirm the coverage map behaves correctly when coordinates exist and when
+  they do not
 - confirm session creation is still rate-limited
 - if Turnstile is enabled, confirm `/api/verify-turnstile` and landing flow
 - review `docker compose logs --tail=50`
@@ -77,3 +83,5 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 - Keep port `3090` private to the proxy or internal network.
 - Do not add runtime dependencies on sibling repositories.
 - Keep `KNOWN_OBSERVERS` values as full pubkeys, not display names.
+- The repo footer link is fixed to the project repository; only the optional
+  external hero link should be env-configurable.

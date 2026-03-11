@@ -1,5 +1,20 @@
 # Changes
 
+## v1.2.0
+
+- added observer coverage map with dark mode by default and a light-map toggle
+- observer markers now show green for observers that saw the matched message and red for observers that did not
+- observer coordinates are now learned from MQTT metadata and persisted into `observer.json`
+- `observer.json` now supports saved observer profiles with `name`, `lat`, and `lon`
+- added observer receipt timeline visualization by first-seen time
+- linked matched message hashes directly to the packet analyzer
+- added optional env-driven external hero link via `EXTERNAL_LINK_URL` and `EXTERNAL_LINK_LABEL`
+- moved the repo reference to a footer note and hard-coded it to the project repository
+- added local Leaflet-based map rendering without a CDN dependency
+- fixed map tile loading under CSP and fixed tile-layer reload flicker on refresh
+- fixed active-session hash alias handling so in-flight receipts do not reset coverage mid-run
+- added API coverage for MQTT-learned observer coordinates
+
 ## v1.0
 
 - initial standalone release of Mesh Health Check

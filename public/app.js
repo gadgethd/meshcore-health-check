@@ -1,6 +1,8 @@
 const SESSION_STORAGE_KEY = 'mesh-health-check-session-id';
 const SESSION_HISTORY_STORAGE_KEY = 'mesh-health-check-session-history';
 const OBSERVER_ALLOWLIST_STORAGE_KEY = 'mesh-health-check-observer-allowlist';
+const MAP_THEME_STORAGE_KEY = 'mesh-health-check-map-theme';
+const ANALYZER_BASE_URL = 'https://analyzer.letsmesh.net/packets?packet_hash=';
 
 const ui = {
   mqttPill: document.querySelector('#mqtt-pill'),
@@ -21,13 +23,25 @@ const ui = {
   heroDescriptionSuffix: document.querySelector('#hero-description-suffix'),
   heroChannel: document.querySelector('#hero-channel'),
   brokerName: document.querySelector('#broker-name'),
+  externalLink: document.querySelector('#external-link'),
+  repoNoteLink: document.querySelector('#repo-note-link'),
   messagePreview: document.querySelector('#message-preview'),
   expectedSource: document.querySelector('#expected-source'),
   expectedObservers: document.querySelector('#expected-observers'),
   observerAllowlistNote: document.querySelector('#observer-allowlist-note'),
   observerAllowlist: document.querySelector('#observer-allowlist'),
   observerAllowlistClear: document.querySelector('#observer-allowlist-clear'),
+  mapThemeToggle: document.querySelector('#map-theme-toggle'),
+  mapObserverNote: document.querySelector('#map-observer-note'),
+  mapEmpty: document.querySelector('#map-empty'),
+  observerMap: document.querySelector('#observer-map'),
   activeObserverNote: document.querySelector('#active-observer-note'),
+  timelineSummary: document.querySelector('#timeline-summary'),
+  timelineScale: document.querySelector('#timeline-scale'),
+  timelineStartLabel: document.querySelector('#timeline-start-label'),
+  timelineEndLabel: document.querySelector('#timeline-end-label'),
+  receiptTimelineEmpty: document.querySelector('#receipt-timeline-empty'),
+  receiptTimeline: document.querySelector('#receipt-timeline'),
   receiptsEmpty: document.querySelector('#receipts-empty'),
   receipts: document.querySelector('#receipts'),
   sessionHistory: document.querySelector('#session-history'),
@@ -41,10 +55,18 @@ const state = {
   currentSessionId: sessionStorage.getItem(SESSION_STORAGE_KEY) || '',
   trackedSessionIds: loadTrackedSessionIds(),
   selectedObserverKeys: loadSelectedObserverKeys(),
+  mapTheme: loadMapTheme(),
   sessions: new Map(),
   socket: null,
   socketRetryTimer: 0,
   refreshInFlight: false,
+  map: {
+    instance: null,
+    layer: null,
+    layerTheme: '',
+    markers: new Map(),
+    boundsKey: '',
+  },
 };
 
 function loadTrackedSessionIds() {
@@ -85,6 +107,15 @@ function saveSelectedObserverKeys() {
     OBSERVER_ALLOWLIST_STORAGE_KEY,
     JSON.stringify(state.selectedObserverKeys),
   );
+}
+
+function loadMapTheme() {
+  const stored = localStorage.getItem(MAP_THEME_STORAGE_KEY);
+  return stored === 'light' ? 'light' : 'dark';
+}
+
+function saveMapTheme() {
+  localStorage.setItem(MAP_THEME_STORAGE_KEY, state.mapTheme);
 }
 
 function observerDirectory() {
@@ -186,6 +217,41 @@ function formatTime(timestamp) {
     minute: '2-digit',
     second: '2-digit',
   });
+}
+
+function formatElapsed(ms) {
+  const value = Math.max(0, Math.round(ms));
+  if (value < 1000) {
+    return `${value} ms`;
+  }
+  if (value < 60000) {
+    const seconds = value / 1000;
+    return `${seconds >= 10 ? seconds.toFixed(0) : seconds.toFixed(1)} s`;
+  }
+  const minutes = Math.floor(value / 60000);
+  const seconds = Math.round((value % 60000) / 1000);
+  if (seconds === 60) {
+    return `${minutes + 1} min`;
+  }
+  return `${minutes} min ${seconds}s`;
+}
+
+function setSessionHash(hash) {
+  const value = String(hash || '').trim();
+  if (!value) {
+    ui.sessionHash.textContent = 'Pending';
+    ui.sessionHash.href = '#';
+    ui.sessionHash.classList.add('pending');
+    ui.sessionHash.removeAttribute('target');
+    ui.sessionHash.removeAttribute('rel');
+    return;
+  }
+
+  ui.sessionHash.textContent = value;
+  ui.sessionHash.href = `${ANALYZER_BASE_URL}${encodeURIComponent(value)}`;
+  ui.sessionHash.classList.remove('pending');
+  ui.sessionHash.setAttribute('target', '_blank');
+  ui.sessionHash.setAttribute('rel', 'noopener noreferrer');
 }
 
 function healthClass(label) {
@@ -346,17 +412,148 @@ function applySiteBranding(snapshot) {
   const title = site.title || 'Mesh Health Check';
   const eyebrow = site.eyebrow || 'MeshCore Observer Coverage';
   const headline = site.headline || 'Check your mesh reach.';
+  const repoUrl = site.repoUrl || 'https://github.com/yellowcooln/meshcore-health-check';
+  const externalUrl = String(site.externalLinkUrl || '').trim();
+  const externalLabel = String(site.externalLinkLabel || '').trim() || 'External Link';
   const description = site.description
     || 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.';
   const [prefix, ...suffixParts] = description.split('configured channel');
   const suffix = suffixParts.join('configured channel');
 
   document.title = title;
+  ui.repoNoteLink.href = repoUrl;
+  if (externalUrl) {
+    ui.externalLink.href = externalUrl;
+    ui.externalLink.textContent = externalLabel;
+    ui.externalLink.classList.remove('hidden');
+  } else {
+    ui.externalLink.href = '#';
+    ui.externalLink.textContent = 'External Link';
+    ui.externalLink.classList.add('hidden');
+  }
   ui.heroEyebrow.textContent = eyebrow;
   ui.heroTitle.textContent = headline;
   ui.heroDescriptionPrefix.textContent = (prefix || '').trimEnd() || 'Generate a test code, send it to';
   ui.heroDescriptionSuffix.textContent = (suffix || '').trimStart()
     || 'and watch observer coverage build in real time.';
+}
+
+function mapTargetObservers(session) {
+  const directoryByKey = new Map(observerDirectory().map((observer) => [observer.key, observer]));
+  const targetKeys = Array.isArray(session?.expectedObservers) && session.expectedObservers.length > 0
+    ? session.expectedObservers.map((observer) => observer.key)
+    : defaultObserverKeys();
+  const seenKeys = new Set(
+    Array.isArray(session?.receipts) ? session.receipts.map((receipt) => receipt.observerKey) : [],
+  );
+  return targetKeys
+    .map((key) => directoryByKey.get(key))
+    .filter((observer) => observer && observer.lat != null && observer.lon != null)
+    .map((observer) => ({
+      ...observer,
+      seen: seenKeys.has(observer.key),
+    }));
+}
+
+function ensureObserverMap() {
+  if (state.map.instance || !ui.observerMap || !window.L) {
+    return state.map.instance;
+  }
+  state.map.instance = window.L.map(ui.observerMap, {
+    zoomControl: true,
+    attributionControl: true,
+  });
+  return state.map.instance;
+}
+
+function currentTileLayer() {
+  if (!window.L) {
+    return null;
+  }
+  if (state.mapTheme === 'light') {
+    return window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors',
+    });
+  }
+  return window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19,
+    subdomains: 'abcd',
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+  });
+}
+
+function markerIcon(observer) {
+  return window.L.divIcon({
+    className: 'observer-map-icon-shell',
+    html: `<span class="observer-map-icon ${observer.seen ? 'seen' : 'missed'}"></span>`,
+    iconSize: [18, 18],
+    iconAnchor: [9, 9],
+  });
+}
+
+function renderObserverMap(session) {
+  const locatedObservers = mapTargetObservers(session);
+  const mapInstance = ensureObserverMap();
+
+  ui.mapThemeToggle.textContent = state.mapTheme === 'dark' ? 'Light Map' : 'Dark Map';
+  ui.mapObserverNote.textContent = locatedObservers.length > 0
+    ? `${locatedObservers.filter((observer) => observer.seen).length}/${locatedObservers.length} mapped observers reached.`
+    : 'Waiting for observer coordinates.';
+  ui.mapEmpty.classList.toggle('hidden', locatedObservers.length > 0);
+  ui.observerMap.classList.toggle('hidden', locatedObservers.length === 0);
+
+  if (!mapInstance || !window.L) {
+    return;
+  }
+
+  if (!state.map.layer || state.map.layerTheme !== state.mapTheme) {
+    const nextLayer = currentTileLayer();
+    if (state.map.layer) {
+      mapInstance.removeLayer(state.map.layer);
+    }
+    state.map.layer = nextLayer;
+    state.map.layerTheme = state.mapTheme;
+    if (nextLayer) {
+      nextLayer.addTo(mapInstance);
+    }
+  }
+
+  const activeKeys = new Set(locatedObservers.map((observer) => observer.key));
+  for (const [key, marker] of state.map.markers.entries()) {
+    if (!activeKeys.has(key)) {
+      marker.remove();
+      state.map.markers.delete(key);
+    }
+  }
+
+  const bounds = [];
+  for (const observer of locatedObservers) {
+    const latLng = [observer.lat, observer.lon];
+    bounds.push(latLng);
+    let marker = state.map.markers.get(observer.key);
+    if (!marker) {
+      marker = window.L.marker(latLng, { icon: markerIcon(observer) }).addTo(mapInstance);
+      state.map.markers.set(observer.key, marker);
+    } else {
+      marker.setLatLng(latLng);
+      marker.setIcon(markerIcon(observer));
+    }
+    marker.bindPopup(`
+      <strong>${observer.label}</strong><br>
+      ${observer.seen ? 'Seen by this check' : 'Not seen by this check'}<br>
+      ${observer.hash || '--'} · ${observer.shortKey}
+    `);
+  }
+
+  const boundsKey = locatedObservers.map((observer) => observer.key).join('|');
+  if (bounds.length > 0 && boundsKey !== state.map.boundsKey) {
+    mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
+    state.map.boundsKey = boundsKey;
+  }
+  window.setTimeout(() => {
+    mapInstance.invalidateSize();
+  }, 0);
 }
 
 function renderReceipts(session) {
@@ -389,6 +586,53 @@ function renderReceipts(session) {
       <div class="receipt-path">${receipt.path.length > 0 ? receipt.path.join(' → ') : 'No path data'}</div>
     `;
     ui.receipts.appendChild(card);
+  }
+}
+
+function renderReceiptTimeline(session) {
+  const receipts = Array.isArray(session?.receipts)
+    ? [...session.receipts]
+        .filter((receipt) => receipt?.firstSeenAt)
+        .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
+    : [];
+
+  ui.receiptTimeline.innerHTML = '';
+  ui.receiptTimelineEmpty.classList.toggle('hidden', receipts.length > 0);
+  ui.timelineScale.classList.toggle('hidden', receipts.length === 0);
+
+  if (receipts.length === 0) {
+    ui.timelineSummary.textContent = 'Waiting for observer reports';
+    ui.timelineStartLabel.textContent = 'First receipt';
+    ui.timelineEndLabel.textContent = 'Latest receipt';
+    return;
+  }
+
+  const firstSeenAt = receipts[0].firstSeenAt;
+  const lastSeenAt = receipts[receipts.length - 1].firstSeenAt;
+  const spread = Math.max(0, lastSeenAt - firstSeenAt);
+
+  ui.timelineSummary.textContent = spread > 0
+    ? `${receipts.length} observers across ${formatElapsed(spread)}`
+    : `${receipts.length} observer${receipts.length === 1 ? '' : 's'} at the same moment`;
+  ui.timelineStartLabel.textContent = formatTime(firstSeenAt);
+  ui.timelineEndLabel.textContent = spread > 0 ? `+${formatElapsed(spread)}` : 'same moment';
+
+  for (const receipt of receipts) {
+    const delta = Math.max(0, receipt.firstSeenAt - firstSeenAt);
+    const position = spread > 0 ? (delta / spread) * 100 : 0;
+    const row = document.createElement('article');
+    row.className = 'timeline-row';
+    row.innerHTML = `
+      <div class="timeline-copy">
+        <strong>${receipt.observerLabel}</strong>
+        <span>${delta === 0 ? `First receipt · ${formatTime(receipt.firstSeenAt)}` : `+${formatElapsed(delta)} · ${formatTime(receipt.firstSeenAt)}`}</span>
+      </div>
+      <div class="timeline-track">
+        <span class="timeline-fill" style="width: ${position}%;"></span>
+        <span class="timeline-dot" style="left: ${position}%;"></span>
+      </div>
+    `;
+    ui.receiptTimeline.appendChild(row);
   }
 }
 
@@ -441,7 +685,7 @@ function render() {
     ui.sessionCode.textContent = 'No active code';
     ui.sessionInstructions.textContent = 'Create a session to start listening.';
     ui.sessionStatus.textContent = 'Idle';
-    ui.sessionHash.textContent = 'Pending';
+    setSessionHash('');
     ui.healthLabel.textContent = 'Waiting';
     ui.healthLabel.className = '';
     ui.healthPercent.textContent = '0%';
@@ -452,6 +696,8 @@ function render() {
     ui.expectedSource.textContent = defaultObserverTargetSummary();
     renderObserverAllowlist();
     renderExpectedObservers(null);
+    renderObserverMap(null);
+    renderReceiptTimeline(null);
     renderReceipts(null);
     renderHistory(historySessions);
     updateRing(0);
@@ -464,7 +710,7 @@ function render() {
   ui.sessionCode.textContent = session.code;
   ui.sessionInstructions.textContent = session.instructions;
   ui.sessionStatus.textContent = session.status.toUpperCase();
-  ui.sessionHash.textContent = session.messageHash || 'Pending';
+  setSessionHash(session.messageHash);
   ui.healthLabel.textContent = session.healthLabel;
   ui.healthLabel.className = healthClass(session.healthLabel);
   ui.healthPercent.textContent = `${session.healthPercent}%`;
@@ -477,6 +723,8 @@ function render() {
   updateRing(session.healthPercent);
   renderObserverAllowlist();
   renderExpectedObservers(session);
+  renderObserverMap(session);
+  renderReceiptTimeline(session);
   renderReceipts(session);
   renderHistory(historySessions);
 }
@@ -606,12 +854,18 @@ ui.copySessionCodeButton.addEventListener('click', () => {
 });
 
 ui.observerAllowlistClear.addEventListener('click', () => {
-  if (selectedObserverKeysForCreate().length === 0) {
+  if (usingDefaultObserverSet()) {
     return;
   }
   state.selectedObserverKeys = [];
   saveSelectedObserverKeys();
   renderObserverAllowlist();
+});
+
+ui.mapThemeToggle.addEventListener('click', () => {
+  state.mapTheme = state.mapTheme === 'dark' ? 'light' : 'dark';
+  saveMapTheme();
+  render();
 });
 
 bootstrap();

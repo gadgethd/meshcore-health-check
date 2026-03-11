@@ -52,6 +52,8 @@ docker compose up -d --build
 5. The app waits for a matching channel message and then aggregates receipts for
    the same message hash.
 6. The dashboard shows health, observer-by-observer receipts, and path detail.
+7. If observer coordinates are known, the dashboard also shows a coverage map
+   and a receipt timeline.
 
 Users can either:
 
@@ -73,11 +75,13 @@ Each code:
 
 The app loads
 [observer.json](/home/yellowcooln/mesh-health-check/observer.json) at startup
-so known names are available immediately. If MQTT metadata later publishes a
-better name, the server writes it back to that file.
+so known names and coordinates are available immediately. If MQTT metadata later
+publishes a better name or location, the server writes it back to that file.
 
 Without `observer.json`, unnamed observers show as shortened pubkeys until
-metadata propagates.
+metadata propagates. Observers without coordinates still work for scoring, but
+they will not appear on the map until MQTT metadata or a saved profile provides
+`lat` and `lon`.
 
 ## Why Turnstile Is Highly Recommended
 
@@ -99,10 +103,12 @@ optional. If the site is public, it should be enabled.
 - Default observer scoring comes from `KNOWN_OBSERVERS` if set, otherwise from
   the active observer window.
 - [observer.json](/home/yellowcooln/mesh-health-check/observer.json) is
-  bind-mounted so learned names survive rebuilds.
+  bind-mounted so learned observer names and coordinates survive rebuilds.
 - Port `3090` should stay private to your reverse proxy or internal network.
 - `LOG_LEVEL=debug` is useful only when you are tracing MQTT ingest or decode
   problems.
+- `EXTERNAL_LINK_URL` and `EXTERNAL_LINK_LABEL` control the optional hero CTA.
+  Leave them blank to hide it.
 
 ## Troubleshooting
 
@@ -111,6 +117,7 @@ optional. If the site is public, it should be enabled.
   the message reached MQTT
 - raw pubkeys instead of names: add mappings to `observer.json` or wait for
   metadata to propagate
+- map missing some observers: they do not have saved coordinates yet
 - Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key
 - Turnstile always fails: verify the hostname is allowed in Cloudflare
 - low scores: the packet may have had limited reach, or your default target set
