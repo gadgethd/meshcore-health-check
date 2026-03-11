@@ -86,7 +86,8 @@ test('GET /manifest.webmanifest returns installable app metadata', async () => {
   assert.equal(response.status, 200);
 
   const payload = await response.json();
-  assert.equal(payload.name, 'Boston MeshCore Observer Coverage');
+  assert.equal(payload.name, 'Mesh Reach');
+  assert.equal(payload.short_name, 'Mesh Reach');
   assert.equal(payload.display, 'standalone');
   assert.equal(payload.start_url, '/');
   assert.equal(payload.icons[0].src, '/logo.png');

@@ -273,6 +273,7 @@ const APP_DESCRIPTION = envValue(
   'APP_DESCRIPTION',
   'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
 );
+const PWA_APP_NAME = 'Mesh Reach';
 const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
 const EXTERNAL_LINK_URL = envValue('EXTERNAL_LINK_URL', '');
 const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
@@ -1799,11 +1800,9 @@ app.use((request, response, next) => {
   next();
 });
 app.get('/manifest.webmanifest', (request, response) => {
-  const title = APP_TITLE || 'Mesh Health Check';
-  const shortName = title.length <= 12 ? title : title.slice(0, 12);
   response.type('application/manifest+json').send(JSON.stringify({
-    name: title,
-    short_name: shortName,
+    name: PWA_APP_NAME,
+    short_name: PWA_APP_NAME,
     description: APP_DESCRIPTION,
     start_url: '/',
     scope: '/',
