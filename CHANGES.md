@@ -1,5 +1,13 @@
 # Changes
 
+## v1.1.1
+
+- added installable browser app support with a web manifest and service worker
+- added an `Install App` dashboard button for browsers that expose install prompts
+- added Apple touch icon and app-capable metadata to dashboard and landing pages
+- added manifest endpoint coverage in API tests
+- updated docs for installable app support and current feature set
+
 ## v1.1
 
 - added observer coverage map with dark mode by default and a light-map toggle

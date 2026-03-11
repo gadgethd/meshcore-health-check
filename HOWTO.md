@@ -54,6 +54,8 @@ docker compose up -d --build
 6. The dashboard shows health, observer-by-observer receipts, and path detail.
 7. If observer coordinates are known, the dashboard also shows a coverage map
    and a receipt timeline.
+8. In supported browsers, the dashboard can also be installed as a standalone
+   app.
 
 Users can either:
 
@@ -109,6 +111,8 @@ optional. If the site is public, it should be enabled.
   problems.
 - `EXTERNAL_LINK_URL` and `EXTERNAL_LINK_LABEL` control the optional hero CTA.
   Leave them blank to hide it.
+- installable app support does not require extra env configuration; it uses the
+  manifest and service worker bundled with the app
 
 ## Troubleshooting
 
@@ -118,6 +122,8 @@ optional. If the site is public, it should be enabled.
 - raw pubkeys instead of names: add mappings to `observer.json` or wait for
   metadata to propagate
 - map missing some observers: they do not have saved coordinates yet
+- no install prompt: the browser may not consider the site installable yet, or
+  it may not support install prompts on that platform
 - Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key
 - Turnstile always fails: verify the hostname is allowed in Cloudflare
 - low scores: the packet may have had limited reach, or your default target set

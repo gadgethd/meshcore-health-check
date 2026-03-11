@@ -3,9 +3,11 @@ const SESSION_HISTORY_STORAGE_KEY = 'mesh-health-check-session-history';
 const OBSERVER_ALLOWLIST_STORAGE_KEY = 'mesh-health-check-observer-allowlist';
 const MAP_THEME_STORAGE_KEY = 'mesh-health-check-map-theme';
 const ANALYZER_BASE_URL = 'https://analyzer.letsmesh.net/packets?packet_hash=';
+let deferredInstallPrompt = null;
 
 const ui = {
   mqttPill: document.querySelector('#mqtt-pill'),
+  installAppButton: document.querySelector('#install-app-button'),
   newSessionButton: document.querySelector('#new-session-button'),
   copySessionCodeButton: document.querySelector('#copy-session-code'),
   sessionCode: document.querySelector('#session-code'),
@@ -116,6 +118,10 @@ function loadMapTheme() {
 
 function saveMapTheme() {
   localStorage.setItem(MAP_THEME_STORAGE_KEY, state.mapTheme);
+}
+
+function updateInstallButton() {
+  ui.installAppButton.classList.toggle('hidden', !deferredInstallPrompt);
 }
 
 function observerDirectory() {
@@ -273,6 +279,28 @@ function updateRing(percent) {
 
 function redirectToLanding() {
   window.location.href = '/';
+}
+
+async function registerPwa() {
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('/sw.js');
+    } catch {
+      // ignore registration failures
+    }
+  }
+}
+
+async function installApp() {
+  if (!deferredInstallPrompt) {
+    return;
+  }
+  deferredInstallPrompt.prompt();
+  const choice = await deferredInstallPrompt.userChoice.catch(() => null);
+  if (choice?.outcome === 'accepted') {
+    deferredInstallPrompt = null;
+  }
+  updateInstallButton();
 }
 
 async function copyCurrentCode() {
@@ -833,6 +861,7 @@ function connectSocket() {
 }
 
 async function bootstrap() {
+  await registerPwa();
   await refreshFromServer();
   if (!state.snapshot) {
     return;
@@ -847,6 +876,10 @@ async function bootstrap() {
 
 ui.newSessionButton.addEventListener('click', () => {
   createSession();
+});
+
+ui.installAppButton.addEventListener('click', () => {
+  installApp();
 });
 
 ui.copySessionCodeButton.addEventListener('click', () => {
@@ -872,3 +905,14 @@ bootstrap();
 window.setInterval(() => {
   refreshFromServer();
 }, 5000);
+
+window.addEventListener('beforeinstallprompt', (event) => {
+  event.preventDefault();
+  deferredInstallPrompt = event;
+  updateInstallButton();
+});
+
+window.addEventListener('appinstalled', () => {
+  deferredInstallPrompt = null;
+  updateInstallButton();
+});

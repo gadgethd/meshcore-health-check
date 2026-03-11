@@ -9,6 +9,7 @@
   - `index.html`: dashboard shell
   - `app.js`: dashboard state, observer selection, coverage map, receipt
     timeline, API calls, WebSocket updates, rendering
+  - `sw.js`: PWA service worker for installable app support
   - `styles.css`: dashboard layout and responsive styling
   - `landing.html`, `landing.css`, `turnstile-landing.js`: Turnstile landing flow
 - `.env` and `.env.example`: the only runtime configuration source for this
@@ -57,6 +58,7 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
   arrives
 - confirm observer coordinates resolve from `observer.json` or MQTT metadata if
   map behavior changes
+- confirm `GET /manifest.webmanifest` returns valid app metadata if PWA support changes
 - confirm session creation still works, including default and custom observer
   sets
 - confirm the coverage map behaves correctly when coordinates exist and when
