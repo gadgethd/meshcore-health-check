@@ -21,7 +21,6 @@ import {
   normalizeKey,
   normalizeLogLevel,
   normalizePathHop,
-  parseObserverNameEntries,
   shortKey,
   shouldDecodeChannel,
 } from './lib/mesh-health-core.js';
@@ -220,7 +219,36 @@ function parseObserversJson(filePath) {
 
   try {
     const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
-    return parseObserverNameEntries(parsed);
+    const profiles = new Map();
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return profiles;
+    }
+    for (const [rawKey, rawValue] of Object.entries(parsed)) {
+      const key = normalizeKey(rawKey);
+      if (!key) {
+        continue;
+      }
+      if (typeof rawValue === 'string') {
+        const name = String(rawValue || '').trim();
+        if (name) {
+          profiles.set(key, { name, lat: null, lon: null });
+        }
+        continue;
+      }
+      if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) {
+        continue;
+      }
+      const name = String(rawValue.name || rawValue.label || '').trim();
+      const lat = normalizeCoordinate(rawValue.lat ?? rawValue.latitude ?? null, 'lat');
+      const lon = normalizeCoordinate(
+        rawValue.lon ?? rawValue.lng ?? rawValue.longitude ?? null,
+        'lon',
+      );
+      if (name || (lat != null && lon != null)) {
+        profiles.set(key, { name: name || '', lat, lon });
+      }
+    }
+    return profiles;
   } catch (error) {
     logger.warn(`[config] failed to parse ${resolved}: ${error.message}`);
     return new Map();
@@ -245,6 +273,9 @@ const APP_DESCRIPTION = envValue(
   'APP_DESCRIPTION',
   'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
 );
+const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
+const EXTERNAL_LINK_URL = envValue('EXTERNAL_LINK_URL', '');
+const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
 const APP_TITLE_OVERRIDE = envValue('APP_TITLE', '');
 const TRUST_PROXY = envValue('TRUST_PROXY', '1');
 const TURNSTILE_SITE_KEY = envValue('TURNSTILE_SITE_KEY', '');
@@ -298,6 +329,10 @@ const OBSERVER_ACTIVE_WINDOW_MS = Math.max(
   envNumber('OBSERVER_ACTIVE_WINDOW_SECONDS', 900),
 ) * 1000;
 const SESSION_TTL_MS = Math.max(60, envNumber('SESSION_TTL_SECONDS', 600)) * 1000;
+const SESSION_HASH_ALIAS_WINDOW_MS = Math.max(
+  5,
+  envNumber('SESSION_HASH_ALIAS_WINDOW_SECONDS', 90),
+) * 1000;
 const MAX_USES_PER_CODE = Math.max(1, envNumber('MAX_USES_PER_CODE', 3));
 const KNOWN_OBSERVERS = dedupe(envList('KNOWN_OBSERVERS').map(normalizeKey));
 
@@ -397,7 +432,7 @@ const meshPacketDecoderKeyStore = envTestChannelSecret
     })
   : null;
 
-const nodeNames = parseObserversJson(OBSERVERS_FILE_PATH);
+const observerProfiles = parseObserversJson(OBSERVERS_FILE_PATH);
 const appHtmlTemplate = fs.readFileSync(path.join(APP_DIR, 'public/index.html'), 'utf8');
 const landingHtmlTemplate = fs.readFileSync(path.join(APP_DIR, 'public/landing.html'), 'utf8');
 const observerState = new Map();
@@ -408,8 +443,20 @@ const turnstileAuthTokens = new Map();
 let observerNamesWriteTimer = null;
 
 function writeObserverNamesFile() {
-  const entries = [...nodeNames.entries()].sort(([left], [right]) => left.localeCompare(right));
-  const payload = Object.fromEntries(entries);
+  const payload = {};
+  for (const [key, profile] of [...observerProfiles.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    if (!profile) {
+      continue;
+    }
+    const name = String(profile.name || '').trim();
+    const lat = normalizeCoordinate(profile.lat, 'lat');
+    const lon = normalizeCoordinate(profile.lon, 'lon');
+    payload[key] = {
+      ...(name ? { name } : {}),
+      ...(lat != null ? { lat } : {}),
+      ...(lon != null ? { lon } : {}),
+    };
+  }
   const body = `${JSON.stringify(payload, null, 2)}\n`;
   const tempPath = `${OBSERVERS_FILE_PATH}.tmp`;
   try {
@@ -447,14 +494,142 @@ if (!fs.existsSync(OBSERVERS_FILE_PATH)) {
 }
 
 function createObserverRecord(observerKey) {
+  const profile = observerProfiles.get(observerKey) || null;
   return {
     key: observerKey,
     hash: hashFromKeyPrefix(observerKey),
-    name: nodeNames.get(observerKey) || null,
+    name: profile?.name || null,
+    lat: normalizeCoordinate(profile?.lat ?? null, 'lat'),
+    lon: normalizeCoordinate(profile?.lon ?? null, 'lon'),
     firstSeenAt: 0,
     lastPacketAt: 0,
     packetCount: 0,
   };
+}
+
+function normalizeMessageHash(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  if (!raw) {
+    return '';
+  }
+  const compact = raw.replace(/[^0-9A-F]/g, '');
+  return compact || raw;
+}
+
+function normalizeCoordinate(value, axis) {
+  if (value == null || value === '') {
+    return null;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return null;
+  }
+  const limit = axis === 'lat' ? 90 : 180;
+  if (Math.abs(numeric) <= limit) {
+    return Number(numeric.toFixed(6));
+  }
+  for (const scale of [1e7, 1e6, 1e5, 1e4]) {
+    const scaled = numeric / scale;
+    if (Math.abs(scaled) <= limit) {
+      return Number(scaled.toFixed(6));
+    }
+  }
+  return null;
+}
+
+function extractLocationCandidate(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const lat = normalizeCoordinate(value.lat ?? value.latitude ?? null, 'lat');
+  const lon = normalizeCoordinate(value.lon ?? value.lng ?? value.longitude ?? null, 'lon');
+  if (lat != null && lon != null) {
+    return { lat, lon };
+  }
+  return null;
+}
+
+function extractObserverLocation(value) {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const direct = extractLocationCandidate(value);
+  if (direct) {
+    return direct;
+  }
+  for (const child of Object.values(value)) {
+    if (!child || typeof child !== 'object') {
+      continue;
+    }
+    const found = extractObserverLocation(child);
+    if (found) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function normalizedSender(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function unlinkSessionHashes(session) {
+  if (!session) {
+    return;
+  }
+  const knownHashes = Array.isArray(session.messageHashes)
+    ? session.messageHashes
+    : [session.messageHash].filter(Boolean);
+  for (const hash of knownHashes) {
+    messageToSession.delete(hash);
+  }
+  session.messageHashes = [];
+}
+
+function linkSessionHash(session, hash) {
+  const normalizedHash = normalizeMessageHash(hash);
+  if (!session || !normalizedHash) {
+    return;
+  }
+  const knownHashes = Array.isArray(session.messageHashes) ? session.messageHashes : [];
+  if (!knownHashes.includes(normalizedHash)) {
+    knownHashes.push(normalizedHash);
+  }
+  session.messageHashes = knownHashes;
+  if (!session.messageHash) {
+    session.messageHash = normalizedHash;
+  }
+  messageToSession.set(normalizedHash, session.id);
+}
+
+function isSameActiveMessageAlias(session, packetInfo) {
+  if (!session?.messageHash || !session?.matchedAt) {
+    return false;
+  }
+  if (!packetInfo?.messageHash || !packetInfo?.messageBody) {
+    return false;
+  }
+  if (packetInfo.messageHash === session.messageHash) {
+    return true;
+  }
+  if (packetInfo.seenAt - session.matchedAt > SESSION_HASH_ALIAS_WINDOW_MS) {
+    return false;
+  }
+  if (session.receipts?.size <= 0) {
+    return false;
+  }
+  if (String(session.messageBody || '').trim() !== String(packetInfo.messageBody || '').trim()) {
+    return false;
+  }
+  const currentSender = normalizedSender(session.sender);
+  const nextSender = normalizedSender(packetInfo.sender);
+  if (currentSender && nextSender && currentSender !== nextSender) {
+    return false;
+  }
+  if (session.channelHash && packetInfo.channelHash && session.channelHash !== packetInfo.channelHash) {
+    return false;
+  }
+  return true;
 }
 
 function ensureObserverRecord(observerKey) {
@@ -467,14 +642,21 @@ function ensureObserverRecord(observerKey) {
     observer = createObserverRecord(normalizedKey);
     observerState.set(normalizedKey, observer);
   }
-  if (!observer.name && nodeNames.has(normalizedKey)) {
-    observer.name = nodeNames.get(normalizedKey);
+  const profile = observerProfiles.get(normalizedKey) || null;
+  if (!observer.name && profile?.name) {
+    observer.name = profile.name;
+  }
+  if (observer.lat == null && profile?.lat != null) {
+    observer.lat = normalizeCoordinate(profile.lat, 'lat');
+  }
+  if (observer.lon == null && profile?.lon != null) {
+    observer.lon = normalizeCoordinate(profile.lon, 'lon');
   }
   return observer;
 }
 
 function primeObserverDirectory() {
-  for (const key of nodeNames.keys()) {
+  for (const key of observerProfiles.keys()) {
     ensureObserverRecord(key);
   }
   for (const key of KNOWN_OBSERVERS) {
@@ -1058,6 +1240,9 @@ function serializeObserver(observer) {
     hash: observer.hash,
     label: observer.name || shortKey(observer.key),
     name: observer.name || null,
+    lat: observer.lat ?? null,
+    lon: observer.lon ?? null,
+    hasLocation: observer.lat != null && observer.lon != null,
     shortKey: shortKey(observer.key),
     packetCount: observer.packetCount,
     firstSeenAt: observer.firstSeenAt,
@@ -1166,6 +1351,9 @@ function snapshotPayload() {
       eyebrow: APP_EYEBROW,
       headline: APP_HEADLINE,
       description: APP_DESCRIPTION,
+      repoUrl: REPO_URL,
+      externalLinkUrl: EXTERNAL_LINK_URL,
+      externalLinkLabel: EXTERNAL_LINK_LABEL,
     },
     mqtt: {
       connected: mqttConnected,
@@ -1224,16 +1412,40 @@ function updateObserverName(observerKey, name) {
   if (!normalizedKey || !cleanName) {
     return false;
   }
-  const previous = nodeNames.get(normalizedKey) || '';
+  const previous = observerProfiles.get(normalizedKey)?.name || '';
   const observer = ensureObserverRecord(normalizedKey);
   if (!observer) {
     return false;
   }
   const changed = previous !== cleanName || observer.name !== cleanName;
-  nodeNames.set(normalizedKey, cleanName);
+  const profile = observerProfiles.get(normalizedKey) || { name: '', lat: null, lon: null };
+  observerProfiles.set(normalizedKey, { ...profile, name: cleanName });
   observer.name = cleanName;
   if (changed) {
     logger.debug(`[observer] name ${normalizedKey} -> ${cleanName}`);
+    scheduleObserverNamesWrite();
+  }
+  return changed;
+}
+
+function updateObserverLocation(observerKey, location) {
+  const normalizedKey = normalizeKey(observerKey);
+  const lat = normalizeCoordinate(location?.lat ?? null, 'lat');
+  const lon = normalizeCoordinate(location?.lon ?? null, 'lon');
+  if (!normalizedKey || lat == null || lon == null) {
+    return false;
+  }
+  const observer = ensureObserverRecord(normalizedKey);
+  if (!observer) {
+    return false;
+  }
+  const profile = observerProfiles.get(normalizedKey) || { name: '', lat: null, lon: null };
+  const changed = profile.lat !== lat || profile.lon !== lon || observer.lat !== lat || observer.lon !== lon;
+  observerProfiles.set(normalizedKey, { ...profile, lat, lon });
+  observer.lat = lat;
+  observer.lon = lon;
+  if (changed) {
+    logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon}`);
     scheduleObserverNamesWrite();
   }
   return changed;
@@ -1254,12 +1466,14 @@ function handleObserverMetadata(topic, observerKey, payloadBuffer) {
   const originId = normalizeKey(parsed.origin_id || parsed.originId || '');
   if (originId && originId !== observer.key) {
     changed = updateObserverName(originId, extractDeviceName(parsed, topic)) || changed;
+    changed = updateObserverLocation(originId, extractObserverLocation(parsed)) || changed;
   }
 
   const extractedName = extractDeviceName(parsed, topic);
   if (extractedName) {
     changed = updateObserverName(observer.key, extractedName) || changed;
   }
+  changed = updateObserverLocation(observer.key, extractObserverLocation(parsed)) || changed;
 
   return changed;
 }
@@ -1323,11 +1537,13 @@ function maybeMatchSession(packetInfo) {
   if (!session) {
     return null;
   }
+  if (isSameActiveMessageAlias(session, packetInfo)) {
+    linkSessionHash(session, packetInfo.messageHash);
+    return session;
+  }
   const isNewUse = session.messageHash !== packetInfo.messageHash;
   if (isNewUse) {
-    if (session.messageHash) {
-      messageToSession.delete(session.messageHash);
-    }
+    unlinkSessionHashes(session);
     session.receipts = new Map();
     session.useCount += 1;
   }
@@ -1342,7 +1558,7 @@ function maybeMatchSession(packetInfo) {
     session.expectedObserverKeys = [packetInfo.observerKey];
     session.expectedObserverSource = 'first-observer';
   }
-  messageToSession.set(packetInfo.messageHash, session.id);
+  linkSessionHash(session, packetInfo.messageHash);
   return session;
 }
 
@@ -1401,9 +1617,7 @@ function pruneState() {
       : (SESSION_TTL_MS * 2);
     if (now - session.createdAt > maxAge) {
       sessions.delete(sessionId);
-      if (session.messageHash) {
-        messageToSession.delete(session.messageHash);
-      }
+      unlinkSessionHashes(session);
       changed = true;
     }
   }
@@ -1470,9 +1684,9 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   const channelName = channelDisplay(channelHash);
   const messageBody = String(decodedGroup?.message || '').trim();
   const sender = String(decodedGroup?.sender || '').trim();
-  const messageHash = String(
+  const messageHash = normalizeMessageHash(
     envelope?.hash || envelope?.message_hash || envelope?.messageHash || packet.messageHash || '',
-  ).trim();
+  );
 
   if (!decodedGroup) {
     logger.debug(
@@ -1570,7 +1784,7 @@ app.use((request, response, next) => {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src https://challenges.cloudflare.com",
-      "img-src 'self' data:",
+      "img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com",
       "object-src 'none'",
       "script-src 'self' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
@@ -1584,6 +1798,7 @@ app.use((request, response, next) => {
   }
   next();
 });
+app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leaflet/dist'), { index: false }));
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 
 app.get('/api/bootstrap', (request, response) => {
@@ -1642,6 +1857,7 @@ app.post(
       useCount: 0,
       maxUses: MAX_USES_PER_CODE,
       messageHash: '',
+      messageHashes: [],
       matchedAt: 0,
       messageBody: '',
       sender: '',

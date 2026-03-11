@@ -202,6 +202,82 @@ test('fixture packet ingest matches sessions for 3-byte path hashes', async () =
   assert.equal(session.receipts[0].path.at(-1), 'AF');
 });
 
+test('observer metadata learns and exposes saved coordinates from mqtt', async () => {
+  const observerKey = 'AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B';
+
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from(JSON.stringify({
+      name: 'Observer with Coordinates',
+      location: {
+        latitude: 42.3601,
+        longitude: -71.0589,
+      },
+    })),
+  );
+
+  const response = await fetch(`${baseUrl}/api/bootstrap`);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  const observer = payload.observerDirectory.find((entry) => entry.key === observerKey);
+
+  assert.equal(observer?.name, 'Observer with Coordinates');
+  assert.equal(observer?.lat, 42.3601);
+  assert.equal(observer?.lon, -71.0589);
+  assert.equal(observer?.hasLocation, true);
+});
+
+test('same active message with a later hash alias does not reset receipts or uses', async () => {
+  const firstObserverKey = 'AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B';
+  const secondObserverKey = 'C689DF3FEB9A7A5EF05E9642C75ABB8C10DF13D974F196027AA7945BEA996FA4';
+
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: '{}',
+  });
+
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const message = `alias test ${created.code}`;
+  const firstEnvelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Alias Tester',
+    message,
+    messageHash: '438DD45E5436A421',
+    timestamp: 1762000000,
+  });
+  const aliasEnvelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: 'Alias Tester',
+    message,
+    messageHash: '438dd45e5436a421-variant',
+    timestamp: 1762000000,
+  });
+
+  ingestMqttMessage(
+    `meshcore/BOS/${firstObserverKey}/packets`,
+    Buffer.from(JSON.stringify(firstEnvelope)),
+  );
+  ingestMqttMessage(
+    `meshcore/BOS/${secondObserverKey}/packets`,
+    Buffer.from(JSON.stringify(aliasEnvelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  assert.equal(sessionResponse.status, 200);
+
+  const session = await sessionResponse.json();
+  assert.equal(session.useCount, 1);
+  assert.equal(session.status, 'active');
+  assert.equal(session.messageHash, '438DD45E5436A421');
+  assert.equal(session.observedCount, 2);
+  assert.equal(session.receipts.length, 2);
+});
+
 test('session allow list limits scoring and receipts to selected observers', async () => {
   const selectedObserverKey = 'AF07FC2005E04D08DDA921E64985E62201BF974AE0B0E35084B804229ED11A2B';
   const excludedObserverKey = 'C689DF3FEB9A7A5EF05E9642C75ABB8C10DF13D974F196027AA7945BEA996FA4';
