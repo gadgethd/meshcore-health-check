@@ -26,12 +26,12 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'PORT=3091 MESH_HEALTH_DISABLE_RUNTIME=true TURNSTILE_ENABLED=false OBSERVERS_FILE=./test/fixtures/observer-smoke.json node ./scripts/start-test-server.js',
+      command: 'PORT=3091 MESH_HEALTH_DISABLE_RUNTIME=true TURNSTILE_ENABLED=false APP_TITLE=\"Boston MeshCore Observer Coverage\" APP_EYEBROW=\"Boston MeshCore Observer Coverage\" OBSERVERS_FILE=./test/fixtures/observer-smoke.json node ./scripts/start-test-server.js',
       url: 'http://127.0.0.1:3091/api/bootstrap',
       reuseExistingServer: false,
     },
     {
-      command: 'PORT=3092 MESH_HEALTH_DISABLE_RUNTIME=true TURNSTILE_ENABLED=true TURNSTILE_SITE_KEY=test-site-key TURNSTILE_SECRET_KEY=test-secret OBSERVERS_FILE=./test/fixtures/observer-smoke.json node ./scripts/start-test-server.js',
+      command: 'PORT=3092 MESH_HEALTH_DISABLE_RUNTIME=true TURNSTILE_ENABLED=true APP_TITLE=\"Boston MeshCore Observer Coverage\" APP_EYEBROW=\"Boston MeshCore Observer Coverage\" TURNSTILE_SITE_KEY=test-site-key TURNSTILE_SECRET_KEY=test-secret OBSERVERS_FILE=./test/fixtures/observer-smoke.json node ./scripts/start-test-server.js',
       url: 'http://127.0.0.1:3092/api/bootstrap',
       reuseExistingServer: false,
     },

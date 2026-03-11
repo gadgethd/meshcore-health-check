@@ -17,6 +17,8 @@ process.env.MESH_HEALTH_DISABLE_RUNTIME = 'true';
 process.env.TURNSTILE_ENABLED = 'false';
 process.env.LOG_LEVEL = 'info';
 process.env.OBSERVERS_FILE = observerFile;
+process.env.APP_TITLE = 'Boston MeshCore Observer Coverage';
+process.env.APP_EYEBROW = 'Boston MeshCore Observer Coverage';
 process.env.TEST_CHANNEL_NAME = 'health-check';
 process.env.TEST_CHANNEL_SECRET = 'E6D973AAC5101145AD3A3F3A0B3D52EB';
 
