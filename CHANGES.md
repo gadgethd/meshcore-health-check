@@ -6,6 +6,8 @@
 - added an `Install App` dashboard button for browsers that expose install prompts
 - added Apple touch icon and app-capable metadata to dashboard and landing pages
 - added manifest endpoint coverage in API tests
+- added `DASH_BROKER_HOST` so the dashboard can show a public broker label
+  without exposing the internal MQTT connection host
 - updated docs for installable app support and current feature set
 
 ## v1.1
