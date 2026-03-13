@@ -13,7 +13,7 @@
   - `styles.css`: dashboard layout and responsive styling
   - `landing.html`, `landing.css`, `turnstile-landing.js`: Turnstile landing flow
 - `.env` and `.env.example`: the only runtime configuration source for this
-  repo.
+  repo, including the optional `DASH_BROKER_HOST` UI-only broker label.
 - `observer.json`: persistent observer public-key profile map with `name`,
   `lat`, and `lon`, mounted into the container and updated by the server.
 - `README.md`: architecture and flow overview.
@@ -85,5 +85,7 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 - Keep port `3090` private to the proxy or internal network.
 - Do not add runtime dependencies on sibling repositories.
 - Keep `KNOWN_OBSERVERS` values as full pubkeys, not display names.
+- Keep `DASH_BROKER_HOST` aligned with the public-facing broker label you want
+  users to see; it does not affect the actual MQTT connection.
 - The repo footer link is fixed to the project repository; only the optional
   external hero link should be env-configurable.

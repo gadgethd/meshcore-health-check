@@ -32,6 +32,8 @@ cp .env.example .env
 - set `TEST_CHANNEL_NAME`
 - set `TEST_CHANNEL_SECRET`
 - set `KNOWN_OBSERVERS` if you want a fixed default scoring set
+- set `DASH_BROKER_HOST` if the UI should show a public broker label instead of
+  the internal Docker or LAN broker hostname
 - enable Turnstile if the site is internet-facing
 - leave `LOG_LEVEL=info` unless you are actively troubleshooting
 
@@ -102,6 +104,8 @@ optional. If the site is public, it should be enabled.
 ## Operational Notes
 
 - The app only decodes the configured test channel.
+- `DASH_BROKER_HOST` affects only the dashboard label shown to users. MQTT
+  still connects to `MQTT_HOST` or `MQTT_URL`.
 - Default observer scoring comes from `KNOWN_OBSERVERS` if set, otherwise from
   the active observer window.
 - [observer.json](/home/yellowcooln/mesh-health-check/observer.json) is

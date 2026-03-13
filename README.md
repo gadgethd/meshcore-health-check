@@ -73,7 +73,8 @@ Key groups:
   `EXTERNAL_LINK_URL`, `EXTERNAL_LINK_LABEL`, `LOG_LEVEL`, `TRUST_PROXY`
 - MQTT:
   `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_TOPIC`,
-  `MQTT_TRANSPORT`, `MQTT_WS_PATH`, `MQTT_TLS`, optional `MQTT_URL`
+  `MQTT_TRANSPORT`, `MQTT_WS_PATH`, `MQTT_TLS`, `DASH_BROKER_HOST`, optional
+  `MQTT_URL`
 - Channel:
   `TEST_CHANNEL_NAME`, `TEST_CHANNEL_SECRET`, optional `TEST_CHANNEL_HASH`
 - Sessions:
@@ -98,6 +99,8 @@ Important behavior:
 - `observer.json` is loaded at boot and updated when new observer names or
   coordinates are learned from MQTT metadata.
 - The dashboard map only plots observers that have saved coordinates.
+- `DASH_BROKER_HOST` only changes the broker label shown in the dashboard. It
+  does not change the actual MQTT connection target.
 - supported browsers can install the site as a standalone app from the
   dashboard.
 

@@ -19,6 +19,7 @@ process.env.LOG_LEVEL = 'info';
 process.env.OBSERVERS_FILE = observerFile;
 process.env.APP_TITLE = 'Boston MeshCore Observer Coverage';
 process.env.APP_EYEBROW = 'Boston MeshCore Observer Coverage';
+process.env.DASH_BROKER_HOST = 'mqttmc01.bostonme.sh:443';
 process.env.TEST_CHANNEL_NAME = 'health-check';
 process.env.TEST_CHANNEL_SECRET = 'E6D973AAC5101145AD3A3F3A0B3D52EB';
 
@@ -67,6 +68,7 @@ test('GET /api/bootstrap returns site and channel configuration', async () => {
   assert.equal(payload.testChannel.name, 'health-check');
   assert.equal(payload.testChannel.hash, '99');
   assert.equal(payload.turnstile.enabled, false);
+  assert.equal(payload.mqtt.broker, 'mqttmc01.bostonme.sh:443');
 });
 
 test('GET /app includes server-rendered social meta tags', async () => {

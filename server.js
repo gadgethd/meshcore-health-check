@@ -277,6 +277,7 @@ const PWA_APP_NAME = 'Mesh Reach';
 const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
 const EXTERNAL_LINK_URL = envValue('EXTERNAL_LINK_URL', '');
 const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
+const DASH_BROKER_HOST = envValue('DASH_BROKER_HOST', '');
 const APP_TITLE_OVERRIDE = envValue('APP_TITLE', '');
 const TRUST_PROXY = envValue('TRUST_PROXY', '1');
 const TURNSTILE_SITE_KEY = envValue('TURNSTILE_SITE_KEY', '');
@@ -1344,6 +1345,7 @@ function snapshotPayload() {
   const directory = observerDirectory();
   const activeObservers = directory.filter((observer) => observer.isActive);
   const defaultTarget = defaultObserverTarget();
+  const dashboardBrokerHost = DASH_BROKER_HOST || brokerLabel(MQTT_URL);
 
   return {
     serverTime: Date.now(),
@@ -1358,7 +1360,7 @@ function snapshotPayload() {
     },
     mqtt: {
       connected: mqttConnected,
-      broker: brokerLabel(MQTT_URL),
+      broker: dashboardBrokerHost,
       topics: MQTT_TOPICS,
     },
     turnstile: {
