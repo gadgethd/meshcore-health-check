@@ -14,9 +14,9 @@
   - `landing.html`, `landing.css`, `turnstile-landing.js`: Turnstile landing flow
 - `.env` and `.env.example`: the only runtime configuration source for this
   repo, including the optional `DASH_BROKER_HOST` UI-only broker label.
-- `observer.json`: persistent observer public-key profile map with `name`,
+- `data/observer.json`: persistent observer public-key profile map with `name`,
   `lat`, and `lon`, mounted into the container and updated by the server.
-- `session-results.json`: retained session result store used for shareable
+- `data/session-results.json`: retained session result store used for shareable
   `/share/:sessionId` links.
 - `README.md`: architecture and flow overview.
 - `HOWTO.md`: deployment and operator guide.
@@ -56,11 +56,11 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 - run `npm test`
 - run `npm run test:smoke` when UI or routing changes
 - confirm `curl -s http://localhost:3090/api/bootstrap`
-- confirm observer names resolve from `observer.json` before fresh MQTT metadata
+- confirm observer names resolve from `data/observer.json` before fresh MQTT metadata
   arrives
-- confirm observer coordinates resolve from `observer.json` or MQTT metadata if
+- confirm observer coordinates resolve from `data/observer.json` or MQTT metadata if
   map behavior changes
-- confirm retained session results are written to `session-results.json` if
+- confirm retained session results are written to `data/session-results.json` if
   share behavior changes
 - confirm `GET /manifest.webmanifest` returns valid app metadata if PWA support changes
 - confirm session creation still works, including default and custom observer
@@ -91,7 +91,7 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 - Keep `KNOWN_OBSERVERS` values as full pubkeys, not display names.
 - Keep `DASH_BROKER_HOST` aligned with the public-facing broker label you want
   users to see; it does not affect the actual MQTT connection.
-- Keep `RESULTS_FILE` writable and mounted if you expect shared result links to
+- Keep `RESULTS_FILE` under the mounted `data/` path if you expect shared result links to
   survive container restarts.
 - The repo footer link is fixed to the project repository; only the optional
   external hero link should be env-configurable.

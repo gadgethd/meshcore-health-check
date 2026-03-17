@@ -7,7 +7,7 @@
 - added unique code generation across retained session results
 - added automatic pruning of expired retained results from `session-results.json`
 - added a dashboard `Share` button that copies a retained result link
-- added retained result support to Docker with a bind-mounted `session-results.json`
+- added retained result support to Docker with a bind-mounted `data/` directory
 - updated docs and API coverage for retained results and share links
 
 ## v1.1.1

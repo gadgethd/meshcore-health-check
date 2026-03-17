@@ -16,8 +16,8 @@ summarizes observer coverage.
 - network access to the MQTT broker
 - a valid MeshCore channel name and secret
 - optional observer name mappings in
-  [observer.json](/home/yellowcooln/mesh-health-check/observer.json)
-- writable retained results storage in `session-results.json`
+  [data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json)
+- writable retained results storage in `data/session-results.json`
 
 ## Setup
 
@@ -86,11 +86,11 @@ Shared results:
 ## Observer Naming
 
 The app loads
-[observer.json](/home/yellowcooln/mesh-health-check/observer.json) at startup
+[data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json) at startup
 so known names and coordinates are available immediately. If MQTT metadata later
 publishes a better name or location, the server writes it back to that file.
 
-Without `observer.json`, unnamed observers show as shortened pubkeys until
+Without `data/observer.json`, unnamed observers show as shortened pubkeys until
 metadata propagates. Observers without coordinates still work for scoring, but
 they will not appear on the map until MQTT metadata or a saved profile provides
 `lat` and `lon`.
@@ -116,9 +116,7 @@ optional. If the site is public, it should be enabled.
   still connects to `MQTT_HOST` or `MQTT_URL`.
 - Default observer scoring comes from `KNOWN_OBSERVERS` if set, otherwise from
   the active observer window.
-- [observer.json](/home/yellowcooln/mesh-health-check/observer.json) is
-  bind-mounted so learned observer names and coordinates survive rebuilds.
-- `session-results.json` should also be bind-mounted so retained share links
+- `data/` is bind-mounted so learned observer names and retained share links
   survive rebuilds.
 - Port `3090` should stay private to your reverse proxy or internal network.
 - `LOG_LEVEL=debug` is useful only when you are tracing MQTT ingest or decode
@@ -134,8 +132,8 @@ optional. If the site is public, it should be enabled.
 - `WAITING` forever: verify the code was sent to the correct channel and that
   the message reached MQTT
 - shared result says it is unavailable: the retained result likely expired and
-  was pruned from `session-results.json`
-- raw pubkeys instead of names: add mappings to `observer.json` or wait for
+  was pruned from `data/session-results.json`
+- raw pubkeys instead of names: add mappings to `data/observer.json` or wait for
   metadata to propagate
 - map missing some observers: they do not have saved coordinates yet
 - no install prompt: the browser may not consider the site installable yet, or

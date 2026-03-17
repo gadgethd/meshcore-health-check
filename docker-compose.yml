@@ -12,7 +12,6 @@ services:
     environment:
       PORT: "3090"
     volumes:
-      - ./observer.json:/app/observer.json
-      - ./session-results.json:/app/session-results.json
+      - ./data:/app/data
     ports:
       - "3090:3090"

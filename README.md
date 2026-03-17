@@ -52,9 +52,10 @@ Each code:
   WebSocket updates
 - [public/](/home/yellowcooln/mesh-health-check/public): dashboard, landing
   page, browser logic, service worker, and styles
-- [observer.json](/home/yellowcooln/mesh-health-check/observer.json):
+- [data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json):
   persistent observer public-key profile map with `name`, `lat`, and `lon`
-- `session-results.json`: retained session result store for shareable links
+- [data/session-results.json](/home/yellowcooln/mesh-health-check/data/session-results.json):
+  retained session result store for shareable links
 - [`.env.example`](/home/yellowcooln/mesh-health-check/.env.example): deployment
   config template
 - [HOWTO.md](/home/yellowcooln/mesh-health-check/HOWTO.md): setup and operator
@@ -100,9 +101,9 @@ Important behavior:
 - If `KNOWN_OBSERVERS` is blank, the default target falls back to observers
   active in the configured time window.
 - Users can override the default target in the browser for each new code.
-- `observer.json` is loaded at boot and updated when new observer names or
+- `data/observer.json` is loaded at boot and updated when new observer names or
   coordinates are learned from MQTT metadata.
-- `session-results.json` retains shareable result data for the configured
+- `data/session-results.json` retains shareable result data for the configured
   retention window and is pruned automatically after expiry.
 - The dashboard map only plots observers that have saved coordinates.
 - `DASH_BROKER_HOST` only changes the broker label shown in the dashboard. It
