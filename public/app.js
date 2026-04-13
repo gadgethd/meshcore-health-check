@@ -444,12 +444,15 @@ function ringColor(label) {
 }
 
 function updateRing(percent, label) {
-  const degrees = Math.max(0, Math.min(100, percent)) * 3.6;
   const color = ringColor(label);
-  document.documentElement.style.setProperty('--ring-angle', `${degrees}deg`);
+  const circumference = 314.16;
+  const offset = circumference * (1 - Math.max(0, Math.min(100, percent)) / 100);
   document.documentElement.style.setProperty('--ring-color', color);
-  document.querySelector('.score-ring').style.background =
-    `radial-gradient(circle at center, rgba(16, 21, 18, 0.95) 44%, transparent 46%), conic-gradient(${color} ${degrees}deg, rgba(255, 255, 255, 0.08) 0deg)`;
+  const fill = document.querySelector('.score-ring__fill');
+  if (fill) {
+    fill.style.stroke = color;
+    fill.style.strokeDashoffset = offset;
+  }
 }
 
 function redirectToLanding() {
