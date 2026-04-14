@@ -34,6 +34,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     '1111111111111111111111111111111111111111111111111111111111111111',
     '2222222222222222222222222222222222222222222222222222222222222222',
     '3333333333333333333333333333333333333333333333333333333333333333',
+    '4444444444444444444444444444444444444444444444444444444444444444',
   ];
 
   fs.writeFileSync(observerFile, '{}\n', 'utf8');
@@ -44,6 +45,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
       squareFeature('Alpha', 'North', 0, 0, 1, 1),
       squareFeature('Beta', 'North', 1, 0, 2, 1),
       squareFeature('Gamma', 'South', 0, -1, 1, 0),
+      squareFeature('Outside Census places', 'North', 0, 0, 3, 1),
     ],
   })}\n`, 'utf8');
 
@@ -96,6 +98,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
       { key: observerKeys[0], name: 'Alpha Observer', latitude: 0.5, longitude: 0.5 },
       { key: observerKeys[1], name: 'Beta Observer', latitude: 0.5, longitude: 1.5 },
       { key: observerKeys[2], name: 'Gamma Observer', latitude: -0.5, longitude: 0.5 },
+      { key: observerKeys[3], name: 'Fallback Observer', latitude: 0.5, longitude: 2.5 },
     ];
     for (const location of locations) {
       ingestMqttMessage(
@@ -114,15 +117,16 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     assert.equal(response.status, 200);
     const payload = await response.json();
 
-    assert.deepEqual(payload.availableRegions, ['Alpha', 'Beta', 'Gamma']);
+    assert.deepEqual(payload.availableRegions, ['Alpha', 'Beta', 'Gamma', 'Outside Census places']);
     assert.deepEqual(payload.availableRegionGroups, ['North', 'South']);
     assert.deepEqual(payload.regionHierarchy, [
       {
         group: 'North',
-        count: 2,
+        count: 3,
         regions: [
           { name: 'Alpha', count: 1, packetCount: 1 },
           { name: 'Beta', count: 1, packetCount: 1 },
+          { name: 'Outside Census places', count: 1, packetCount: 1 },
         ],
       },
       {
@@ -137,6 +141,10 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     const alphaObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[0]);
     assert.equal(alphaObserver?.region, 'Alpha');
     assert.equal(alphaObserver?.regionGroup, 'North');
+
+    const fallbackObserver = payload.observerDirectory.find((entry) => entry.key === observerKeys[3]);
+    assert.equal(fallbackObserver?.region, 'Outside Census places');
+    assert.equal(fallbackObserver?.regionGroup, 'North');
   } finally {
     flushScheduledWrites();
     await new Promise((resolve, reject) => {

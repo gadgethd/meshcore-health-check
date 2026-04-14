@@ -499,6 +499,55 @@ function pointInFeature(lon, lat, geometry) {
   return false;
 }
 
+function expandBounds(bounds, coordinate) {
+  if (!Array.isArray(coordinate) || coordinate.length < 2) {
+    return bounds;
+  }
+  const [lon, lat] = coordinate;
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    return bounds;
+  }
+  if (!bounds) {
+    return [lon, lat, lon, lat];
+  }
+  bounds[0] = Math.min(bounds[0], lon);
+  bounds[1] = Math.min(bounds[1], lat);
+  bounds[2] = Math.max(bounds[2], lon);
+  bounds[3] = Math.max(bounds[3], lat);
+  return bounds;
+}
+
+function geometryBounds(geometry) {
+  if (!geometry) {
+    return null;
+  }
+  let bounds = null;
+  if (geometry.type === 'Polygon') {
+    for (const ring of geometry.coordinates || []) {
+      for (const coordinate of ring || []) {
+        bounds = expandBounds(bounds, coordinate);
+      }
+    }
+  } else if (geometry.type === 'MultiPolygon') {
+    for (const polygon of geometry.coordinates || []) {
+      for (const ring of polygon || []) {
+        for (const coordinate of ring || []) {
+          bounds = expandBounds(bounds, coordinate);
+        }
+      }
+    }
+  }
+  return bounds;
+}
+
+function pointInBounds(lon, lat, bounds) {
+  return Array.isArray(bounds)
+    && lon >= bounds[0]
+    && lat >= bounds[1]
+    && lon <= bounds[2]
+    && lat <= bounds[3];
+}
+
 function regionProperty(properties, names = []) {
   for (const name of names) {
     const value = properties?.[name];
@@ -555,6 +604,7 @@ function loadRegionBoundaries() {
       group,
       geometry: feature?.geometry || null,
       type,
+      bounds: geometryBounds(feature?.geometry || null),
     };
   }).filter((entry) => entry.name && (entry.type === 'Polygon' || entry.type === 'MultiPolygon'));
   logger.info(`[regions] loaded ${boundaries.length} region boundaries from ${REGIONS_FILE}`);
@@ -568,6 +618,9 @@ function deriveRegionInfo(lat, lon) {
     return { region: null, regionGroup: null };
   }
   for (const boundary of regionBoundaries) {
+    if (!pointInBounds(lon, lat, boundary.bounds)) {
+      continue;
+    }
     if (pointInFeature(lon, lat, boundary.geometry)) {
       return {
         region: boundary.name,
