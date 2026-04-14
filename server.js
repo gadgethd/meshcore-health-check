@@ -1655,6 +1655,7 @@ function snapshotPayload() {
       headline: APP_HEADLINE,
       description: APP_DESCRIPTION,
       repoUrl: REPO_URL,
+      changesUrl: `${REPO_URL}/blob/main/CHANGES.md`,
       externalLinkUrl: EXTERNAL_LINK_URL,
       externalLinkLabel: EXTERNAL_LINK_LABEL,
     },

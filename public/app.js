@@ -691,6 +691,7 @@ function applySiteBranding(snapshot) {
   const eyebrow = site.eyebrow || 'MeshCore Observer Coverage';
   const headline = site.headline || 'Check your mesh reach.';
   const repoUrl = site.repoUrl || 'https://github.com/yellowcooln/meshcore-health-check';
+  const changesUrl = site.changesUrl || `${repoUrl}/blob/main/CHANGES.md`;
   const externalUrl = String(site.externalLinkUrl || '').trim();
   const externalLabel = String(site.externalLinkLabel || '').trim() || 'External Link';
   const description = site.description
@@ -700,6 +701,7 @@ function applySiteBranding(snapshot) {
 
   document.title = isSharePage() ? `${title} Shared Result` : title;
   ui.repoNoteLink.href = repoUrl;
+  ui.siteVersionNote.href = changesUrl;
   ui.siteVersionNote.textContent = `Version: v${version}`;
   if (externalUrl) {
     ui.externalLink.href = externalUrl;
