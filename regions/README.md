@@ -9,7 +9,7 @@ filter, then `name` for the deeper region filter.
 | File | Coverage | Filter groups | Region detail |
 |------|----------|---------------|---------------|
 | `uk.geojson` | United Kingdom | England, Devolved nations | 9 English regions + Scotland, Wales, Northern Ireland (12 total) |
-| `us-states.geojson` | United States | Northeast, Midwest, South, West, Territories | 50 states + DC + Puerto Rico (52 total) |
+| `us-states.geojson` | United States | New England, Mid-Atlantic, East North Central, West North Central, South Atlantic, East South Central, West South Central, Mountain, Pacific, Territories | 50 states + DC + Puerto Rico (52 total) |
 | `de-bundeslaender.geojson` | Germany | North, South, East, West | 16 Bundesländer |
 | `au-states.geojson` | Australia | Eastern Australia, Southern Australia, Western Australia, Territories, External territories | 12 states, territories, and external territories |
 | `ca-provinces.geojson` | Canada | Atlantic Canada, Central Canada, Prairies, West Coast, Territories | 13 provinces and territories |
