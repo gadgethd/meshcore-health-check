@@ -106,6 +106,8 @@ Important behavior:
   active in the configured time window.
 - Observers fall out of the dashboard directory and map if they have not been
   heard from within `OBSERVER_RETENTION_SECONDS`.
+- Set `OBSERVER_RETENTION_SECONDS=0` to disable stale-observer pruning and
+  keep known observers visible regardless of age.
 - Users can override the default target in the browser for each new code.
 - `data/observer.json` is loaded at boot and updated when new observer names or
   coordinates are learned from MQTT metadata.
@@ -161,3 +163,13 @@ The app now uses `@michaelhart/meshcore-decoder` for runtime MeshCore packet
 decoding. The current upstream package already handles multibyte path-hop data,
 and this repo applies a small postinstall compatibility patch so the published
 CommonJS build still loads cleanly on Node 18.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=yellowcooln%2Fmeshcore-health-check&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=yellowcooln/meshcore-health-check&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=yellowcooln/meshcore-health-check&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yellowcooln/meshcore-health-check&type=date&legend=top-left" />
+ </picture>
+</a>
