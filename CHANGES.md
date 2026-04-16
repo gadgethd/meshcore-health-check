@@ -2,6 +2,7 @@
 
 ## v1.2.5
 
+- thank you to @mitchellmoss for the new web UI design that drove this release
 - redesigned the dashboard, shared-result page, and landing flow into the new
   control-center UI with the new hero, command, and glance layout
 - carried the repeater count feature from `v1.2.4` into the redesigned health
