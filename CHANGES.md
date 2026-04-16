@@ -1,5 +1,12 @@
 # Changes
 
+## v1.2.4
+
+- added a repeater count metric to the health card by extracting unique relay
+  hops from matched receipt paths
+- exposed the repeater total in both the main dashboard and shared-result
+  score cards
+
 ## v1.2.3
 
 - fixed receipt-path handling so the app preserves and displays 2-byte and

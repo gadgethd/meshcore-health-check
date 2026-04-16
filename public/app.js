@@ -20,6 +20,7 @@ const ui = {
   healthLabel: document.querySelector('#health-label'),
   healthPercent: document.querySelector('#health-percent'),
   observedCount: document.querySelector('#observed-count'),
+  repeaterCount: document.querySelector('#repeater-count'),
   senderName: document.querySelector('#sender-name'),
   channelName: document.querySelector('#channel-name'),
   heroEyebrow: document.querySelector('#hero-eyebrow'),
@@ -1004,6 +1005,7 @@ function render() {
     ui.healthLabel.className = '';
     ui.healthPercent.innerHTML = '<span class="score-num">0</span><span class="score-unit">%</span>';
     ui.observedCount.textContent = '0 / 0';
+    ui.repeaterCount.textContent = '0';
     ui.senderName.textContent = 'Pending';
     ui.channelName.textContent = channelLabel;
     ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
@@ -1033,6 +1035,7 @@ function render() {
   ui.healthLabel.className = healthClass(session.healthLabel);
   ui.healthPercent.innerHTML = `<span class="score-num">${session.healthPercent}</span><span class="score-unit">%</span>`;
   ui.observedCount.textContent = `${session.observedCount} / ${session.expectedCount}`;
+  ui.repeaterCount.textContent = String(session.repeaterCount || 0);
   ui.senderName.textContent = session.sender || 'Pending';
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
