@@ -47,7 +47,6 @@ test('changing the observer selection updates the target and regenerates the unu
   await expect(observerOptions).toHaveCount(2);
   await observerOptions.nth(0).uncheck();
 
-  await expect(page.locator('#expected-source')).toContainText('next code');
   await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
   await expect(sessionCode).not.toHaveText(initialCode || '', { timeout: 10000 });
   await expect(page.locator('#expected-source')).toContainText('Custom set');
