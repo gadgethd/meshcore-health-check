@@ -91,7 +91,6 @@ const state = {
   selectedObserverKeys: loadSelectedObserverKeys(),
   selectedRegionGroup: null,
   selectedRegion: null,
-  mapTheme: loadMapTheme(),
   uiTheme: loadUiTheme(),
   sessions: new Map(),
   socket: null,
