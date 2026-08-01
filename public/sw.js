@@ -3,6 +3,7 @@ const CORE_ASSETS = [
   '/',
   '/app',
   '/manifest.webmanifest',
+  '/design-tokens.css',
   '/styles.css',
   '/app.js',
   '/landing.css',

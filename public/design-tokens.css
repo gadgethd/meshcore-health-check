@@ -1,0 +1,31 @@
+:root {
+  --bg: #101512;
+  --panel: rgba(23, 31, 27, 0.92);
+  --panel-strong: rgba(31, 42, 36, 0.98);
+  --panel-soft: rgba(255, 255, 255, 0.04);
+  --line: rgba(255, 255, 255, 0.08);
+  --text: #eff5ef;
+  --muted: #a7b6aa;
+  --lede: #d9e4db;
+  --accent: #e6b64a;
+  --accent-strong: #ffcc63;
+  --good: #6fd96a;
+  --fair: #d7b84f;
+  --poor: #f07d60;
+  --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+  --radius: 26px;
+  --font-sans: InterVariable, "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", serif;
+  --font-mono: "Courier New", monospace;
+  --body-background:
+    radial-gradient(circle at top left, rgba(230, 182, 74, 0.2), transparent 28%),
+    radial-gradient(circle at 85% 15%, rgba(111, 217, 106, 0.16), transparent 22%),
+    linear-gradient(160deg, #0b0f0c 0%, #121a16 52%, #1a231e 100%);
+  --landing-background:
+    radial-gradient(circle at top, rgba(230, 182, 74, 0.24), transparent 26%),
+    linear-gradient(160deg, #0b0f0c 0%, #121a16 52%, #1a231e 100%);
+  --landing-panel: rgba(23, 31, 27, 0.94);
+
+  font-family: var(--font-sans);
+  color: var(--text);
+}

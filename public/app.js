@@ -8,6 +8,7 @@ let deferredInstallPrompt = null;
 
 const ui = {
   mqttPill: document.querySelector('#mqtt-pill'),
+  transportStatus: document.querySelector('#transport-status'),
   installAppButton: document.querySelector('#install-app-button'),
   newSessionButton: document.querySelector('#new-session-button'),
   copySessionCodeButton: document.querySelector('#copy-session-code'),
@@ -777,6 +778,46 @@ function applySiteBranding(snapshot) {
     || 'and watch observer coverage build in real time.';
 }
 
+function updateTransportStatus(snapshot) {
+  if (!ui.transportStatus) {
+    return;
+  }
+
+  ui.transportStatus.classList.remove('offline', 'waiting', 'online');
+  if (isSharePage()) {
+    ui.transportStatus.textContent = 'Shared result — live MQTT transport is not used on this page.';
+    return;
+  }
+
+  const mqttConnected = Boolean(snapshot?.mqtt?.connected);
+  const directory = Array.isArray(snapshot?.observerDirectory)
+    ? snapshot.observerDirectory
+    : [];
+  const activeCountValue = Number(snapshot?.observerStats?.activeCount || 0);
+  const activeCount = Number.isFinite(activeCountValue) ? Math.max(0, activeCountValue) : 0;
+
+  if (!mqttConnected) {
+    ui.transportStatus.textContent = 'Broker offline — observer directory cannot update.';
+    ui.transportStatus.classList.add('offline');
+    return;
+  }
+
+  if (directory.length === 0) {
+    ui.transportStatus.textContent = 'Connected to MQTT — waiting for observer metadata or packets.';
+    ui.transportStatus.classList.add('waiting');
+    return;
+  }
+
+  if (activeCount === 0) {
+    ui.transportStatus.textContent = 'Connected to MQTT — observer directory is present; waiting for fresh reports.';
+    ui.transportStatus.classList.add('waiting');
+    return;
+  }
+
+  ui.transportStatus.textContent = `Connected to MQTT — receiving reports from ${activeCount} active observer${activeCount === 1 ? '' : 's'}.`;
+  ui.transportStatus.classList.add('online');
+}
+
 function mapKnownObservers(session) {
   const directory = observerDirectory();
   let source = directory;
@@ -1030,6 +1071,7 @@ function render() {
   ui.copySessionCodeButton.disabled = !session;
   ui.shareSessionButton.disabled = !session?.shareUrl;
   applySiteBranding(snapshot);
+  updateTransportStatus(snapshot);
   if (isSharePage()) {
     ui.mqttPill.textContent = state.sharedSessionMissing ? 'Shared link expired' : 'Shared Result';
     ui.mqttPill.classList.remove('online');

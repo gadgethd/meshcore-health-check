@@ -22,6 +22,7 @@
     <meta name="theme-color" content="#101512">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+    <link rel="stylesheet" href="/design-tokens.css">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page-mode="share">
@@ -50,6 +51,9 @@
               </button>
             </div>
           </div>
+          <p class="transport-status" id="transport-status" role="status" aria-live="polite">
+            Shared result — live MQTT transport is not used on this page.
+          </p>
           <div class="session-code-row">
             <div class="session-code" id="session-code">...</div>
             <div class="session-code-actions">
