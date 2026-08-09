@@ -26,6 +26,7 @@ import {
 } from './lib/mesh-health-core.js';
 
 const APP_DIR = path.dirname(fileURLToPath(import.meta.url));
+const APP_DATA_DIR = path.join(APP_DIR, 'data');
 const require = createRequire(import.meta.url);
 const {
   MeshCorePacketDecoder,
@@ -99,6 +100,21 @@ function envBool(name, fallback = false) {
   return ['1', 'true', 'yes', 'on'].includes(raw);
 }
 
+function normalizeTrustProxy(value) {
+  const raw = String(value || '').trim();
+  const normalized = raw.toLowerCase();
+  if (['false', 'no', 'off'].includes(normalized)) {
+    return false;
+  }
+  if (['true', 'yes', 'on'].includes(normalized)) {
+    return true;
+  }
+  if (/^\d+$/.test(raw)) {
+    return Number(raw);
+  }
+  return raw;
+}
+
 function envList(name) {
   const raw = envValue(name, '');
   if (!raw) {
@@ -108,6 +124,29 @@ function envList(name) {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeSiteUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return '';
+    }
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function normalizeDistanceUnit(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['km', 'kilometer', 'kilometers'].includes(normalized) ? 'km' : 'mi';
 }
 
 function createLogger(levelName) {
@@ -174,10 +213,12 @@ function brokerLabel(urlString) {
 
 function hashFromKeyPrefix(value) {
   const normalized = normalizeKey(value);
-  if (normalized.length < 2) {
+  const byteSize = OBSERVER_HASH_DISPLAY_BYTES;
+  const displayLength = byteSize * 2;
+  if (normalized.length < displayLength) {
     return '';
   }
-  return normalized.slice(0, 2);
+  return normalized.slice(0, displayLength);
 }
 
 function observerPathHop(observerKey, hashSize = 1) {
@@ -284,10 +325,14 @@ const MQTT_URL = buildMqttUrl();
 const MQTT_TOPICS = dedupe(envList('MQTT_TOPIC').length > 0
   ? envList('MQTT_TOPIC')
   : ['meshcore/BOS/#']);
-const OBSERVERS_FILE = envValue('OBSERVERS_FILE', 'observer.json');
+const OBSERVERS_FILE = envValue('OBSERVERS_FILE', path.join('data', 'observer.json'));
 const OBSERVERS_FILE_PATH = resolveAppPath(OBSERVERS_FILE);
+const OBSERVER_ACTIVITY_FILE = envValue('OBSERVER_ACTIVITY_FILE', path.join('data', 'observer-activity.json'));
+const OBSERVER_ACTIVITY_FILE_PATH = resolveAppPath(OBSERVER_ACTIVITY_FILE);
 const REGIONS_FILE = envValue('REGIONS_FILE', '');
-const RESULTS_FILE = envValue('RESULTS_FILE', 'session-results.json');
+const REGION_NAME_PROPERTY = envValue('REGION_NAME_PROPERTY', 'name');
+const REGION_GROUP_PROPERTY = envValue('REGION_GROUP_PROPERTY', 'group');
+const RESULTS_FILE = envValue('RESULTS_FILE', path.join('data', 'session-results.json'));
 const RESULTS_FILE_PATH = resolveAppPath(RESULTS_FILE);
 const APP_TITLE = envValue('APP_TITLE', 'Mesh Health Check');
 const APP_EYEBROW = envValue('APP_EYEBROW', 'MeshCore Observer Coverage');
@@ -296,13 +341,16 @@ const APP_DESCRIPTION = envValue(
   'APP_DESCRIPTION',
   'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
 );
+const SITE_URL = normalizeSiteUrl(envValue('SITE_URL', ''));
+const CORESCOPE_URL = normalizeSiteUrl(envValue('CORESCOPE_URL', ''));
+const DISTANCE_UNIT = normalizeDistanceUnit(envValue('DISTANCE_UNIT', 'mi'));
 const PWA_APP_NAME = 'Mesh Reach';
 const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
-const EXTERNAL_LINK_URL = envValue('EXTERNAL_LINK_URL', '');
+const EXTERNAL_LINK_URL = normalizeSiteUrl(envValue('EXTERNAL_LINK_URL', ''));
 const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
 const DASH_BROKER_HOST = envValue('DASH_BROKER_HOST', '');
 const APP_TITLE_OVERRIDE = envValue('APP_TITLE', '');
-const TRUST_PROXY = envValue('TRUST_PROXY', '1');
+const TRUST_PROXY = normalizeTrustProxy(envValue('TRUST_PROXY', '1'));
 const TURNSTILE_SITE_KEY = envValue('TURNSTILE_SITE_KEY', '');
 const TURNSTILE_SECRET_KEY = envValue('TURNSTILE_SECRET_KEY', '');
 const TURNSTILE_ENABLED = envBool(
@@ -353,6 +401,18 @@ const OBSERVER_ACTIVE_WINDOW_MS = Math.max(
   60,
   envNumber('OBSERVER_ACTIVE_WINDOW_SECONDS', 900),
 ) * 1000;
+const OBSERVER_TOP_WINDOW_DAYS = Math.max(
+  1,
+  Math.round(envNumber('OBSERVER_TOP_WINDOW_DAYS', 7)),
+);
+const OBSERVER_TOP_COUNT = Math.max(
+  1,
+  Math.round(envNumber('OBSERVER_TOP_COUNT', 10)),
+);
+const OBSERVER_HASH_DISPLAY_BYTES = Math.max(
+  1,
+  Math.min(3, Math.round(envNumber('OBSERVER_HASH_DISPLAY_BYTES', 1))),
+);
 const OBSERVER_RETENTION_SECONDS = envNumber('OBSERVER_RETENTION_SECONDS', 14400);
 const OBSERVER_RETENTION_MS = OBSERVER_RETENTION_SECONDS <= 0
   ? 0
@@ -497,6 +557,65 @@ function pointInFeature(lon, lat, geometry) {
   return false;
 }
 
+function expandBounds(bounds, coordinate) {
+  if (!Array.isArray(coordinate) || coordinate.length < 2) {
+    return bounds;
+  }
+  const [lon, lat] = coordinate;
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+    return bounds;
+  }
+  if (!bounds) {
+    return [lon, lat, lon, lat];
+  }
+  bounds[0] = Math.min(bounds[0], lon);
+  bounds[1] = Math.min(bounds[1], lat);
+  bounds[2] = Math.max(bounds[2], lon);
+  bounds[3] = Math.max(bounds[3], lat);
+  return bounds;
+}
+
+function geometryBounds(geometry) {
+  if (!geometry) {
+    return null;
+  }
+  let bounds = null;
+  if (geometry.type === 'Polygon') {
+    for (const ring of geometry.coordinates || []) {
+      for (const coordinate of ring || []) {
+        bounds = expandBounds(bounds, coordinate);
+      }
+    }
+  } else if (geometry.type === 'MultiPolygon') {
+    for (const polygon of geometry.coordinates || []) {
+      for (const ring of polygon || []) {
+        for (const coordinate of ring || []) {
+          bounds = expandBounds(bounds, coordinate);
+        }
+      }
+    }
+  }
+  return bounds;
+}
+
+function pointInBounds(lon, lat, bounds) {
+  return Array.isArray(bounds)
+    && lon >= bounds[0]
+    && lat >= bounds[1]
+    && lon <= bounds[2]
+    && lat <= bounds[3];
+}
+
+function regionProperty(properties, names = []) {
+  for (const name of names) {
+    const value = properties?.[name];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return '';
+}
+
 function loadRegionBoundaries() {
   if (!REGIONS_FILE) return [];
   const filePath = resolveAppPath(REGIONS_FILE);
@@ -518,44 +637,97 @@ function loadRegionBoundaries() {
     logger.warn('[regions] regions file is not a GeoJSON FeatureCollection — region detection disabled');
     return [];
   }
-  const boundaries = geojson.features.filter((f) => {
-    const type = f?.geometry?.type;
-    return f?.properties?.name && (type === 'Polygon' || type === 'MultiPolygon');
-  });
+  const boundaries = geojson.features.map((feature) => {
+    const properties = feature?.properties || {};
+    const type = feature?.geometry?.type;
+    const name = regionProperty(properties, [
+      REGION_NAME_PROPERTY,
+      'name',
+      'NAME',
+      'name_en',
+      'NAME_2',
+      'NAME_1',
+      'region',
+      'subregion',
+    ]);
+    const group = regionProperty(properties, [
+      REGION_GROUP_PROPERTY,
+      'group',
+      'parent',
+      'regionGroup',
+      'region_group',
+    ]);
+    return {
+      name,
+      group,
+      geometry: feature?.geometry || null,
+      type,
+      bounds: geometryBounds(feature?.geometry || null),
+    };
+  }).filter((entry) => entry.name && (entry.type === 'Polygon' || entry.type === 'MultiPolygon'));
   logger.info(`[regions] loaded ${boundaries.length} region boundaries from ${REGIONS_FILE}`);
   return boundaries;
 }
 
 const regionBoundaries = loadRegionBoundaries();
 
-function deriveRegion(lat, lon) {
-  if (lat == null || lon == null || regionBoundaries.length === 0) return null;
-  for (const feature of regionBoundaries) {
-    if (pointInFeature(lon, lat, feature.geometry)) {
-      return feature.properties.name;
+function deriveRegionInfo(lat, lon) {
+  if (lat == null || lon == null || regionBoundaries.length === 0) {
+    return { region: null, regionGroup: null };
+  }
+  for (const boundary of regionBoundaries) {
+    if (!pointInBounds(lon, lat, boundary.bounds)) {
+      continue;
+    }
+    if (pointInFeature(lon, lat, boundary.geometry)) {
+      return {
+        region: boundary.name,
+        regionGroup: boundary.group || null,
+      };
     }
   }
-  return null;
+  return { region: null, regionGroup: null };
+}
+
+function utcDayKey(timestamp = Date.now()) {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function recentUtcDayKeys(days, now = Date.now()) {
+  const safeDays = Math.max(1, Math.round(Number(days) || 1));
+  const keys = [];
+  for (let index = 0; index < safeDays; index += 1) {
+    keys.push(utcDayKey(now - (index * 86400000)));
+  }
+  return keys;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 const observerProfiles = parseObserversJson(OBSERVERS_FILE_PATH);
+const pinnedObserverNameKeys = new Set(
+  [...observerProfiles.entries()]
+    .filter(([, profile]) => String(profile?.name || '').trim())
+    .map(([key]) => key),
+);
 const appHtmlTemplate = fs.readFileSync(path.join(APP_DIR, 'public/index.html'), 'utf8');
 const landingHtmlTemplate = fs.readFileSync(path.join(APP_DIR, 'public/landing.html'), 'utf8');
 const shareHtmlTemplate = fs.readFileSync(path.join(APP_DIR, 'public/share.html'), 'utf8');
 const observerState = new Map();
+const observerActivityHistory = parseObserverActivityJson(OBSERVER_ACTIVITY_FILE_PATH);
 const sessions = new Map();
 const messageToSession = new Map();
 const rateLimitBuckets = new Map();
 const turnstileAuthTokens = new Map();
 let observerNamesWriteTimer = null;
+let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
 
 function writeJsonFileAtomic(filePath, payload) {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
   const tempPath = `${filePath}.tmp`;
   try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tempPath, body, 'utf8');
     fs.renameSync(tempPath, filePath);
   } catch (error) {
@@ -571,6 +743,66 @@ function writeJsonFileAtomic(filePath, payload) {
     throw error;
   }
 }
+
+function parseObserverActivityJson(filePath) {
+  const resolved = resolveAppPath(filePath);
+  if (!fs.existsSync(resolved)) {
+    return new Map();
+  }
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+    const rawObservers = parsed?.observers && typeof parsed.observers === 'object'
+      ? parsed.observers
+      : parsed;
+    const history = new Map();
+    if (!rawObservers || typeof rawObservers !== 'object' || Array.isArray(rawObservers)) {
+      return history;
+    }
+
+    for (const [rawKey, rawEntry] of Object.entries(rawObservers)) {
+      const key = normalizeKey(rawKey);
+      if (!key || !rawEntry || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
+        continue;
+      }
+      const days = {};
+      const rawDays = rawEntry.days && typeof rawEntry.days === 'object' ? rawEntry.days : {};
+      for (const [dayKey, rawCount] of Object.entries(rawDays)) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dayKey)) {
+          continue;
+        }
+        const count = Math.max(0, Math.floor(Number(rawCount) || 0));
+        if (count > 0) {
+          days[dayKey] = count;
+        }
+      }
+      const lastPacketAt = Number(rawEntry.lastPacketAt || 0);
+      if (Object.keys(days).length > 0 || (Number.isFinite(lastPacketAt) && lastPacketAt > 0)) {
+        history.set(key, {
+          days,
+          lastPacketAt: Number.isFinite(lastPacketAt) && lastPacketAt > 0 ? lastPacketAt : 0,
+        });
+      }
+    }
+    return history;
+  } catch (error) {
+    logger.warn(`[config] failed to parse ${resolved}: ${error.message}`);
+    return new Map();
+  }
+}
+
+function cloneObserverActivityHistory(source) {
+  const out = new Map();
+  for (const [key, entry] of source.entries()) {
+    out.set(key, {
+      days: { ...(entry?.days || {}) },
+      lastPacketAt: Number(entry?.lastPacketAt || 0),
+    });
+  }
+  return out;
+}
+
+const baselineObserverActivityHistory = cloneObserverActivityHistory(observerActivityHistory);
 
 function sessionRetentionDeadline(session) {
   const createdAt = Number(session?.createdAt || 0);
@@ -728,6 +960,11 @@ function flushScheduledWrites() {
     observerNamesWriteTimer = null;
     writeObserverNamesFile();
   }
+  if (observerActivityWriteTimer) {
+    clearTimeout(observerActivityWriteTimer);
+    observerActivityWriteTimer = null;
+    writeObserverActivityFile();
+  }
   if (resultsWriteTimer) {
     clearTimeout(resultsWriteTimer);
     resultsWriteTimer = null;
@@ -766,6 +1003,40 @@ function scheduleObserverNamesWrite() {
   }, 250);
 }
 
+function writeObserverActivityFile() {
+  const observers = {};
+  for (const [key, entry] of [...observerActivityHistory.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+    const days = Object.fromEntries(
+      Object.entries(entry?.days || {})
+        .filter(([, count]) => Math.max(0, Math.floor(Number(count) || 0)) > 0)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([dayKey, count]) => [dayKey, Math.max(0, Math.floor(Number(count) || 0))]),
+    );
+    const lastPacketAt = Number(entry?.lastPacketAt || 0);
+    if (Object.keys(days).length === 0 && !(Number.isFinite(lastPacketAt) && lastPacketAt > 0)) {
+      continue;
+    }
+    observers[key] = {
+      ...(Object.keys(days).length > 0 ? { days } : {}),
+      ...(Number.isFinite(lastPacketAt) && lastPacketAt > 0 ? { lastPacketAt } : {}),
+    };
+  }
+  writeJsonFileAtomic(OBSERVER_ACTIVITY_FILE_PATH, {
+    version: 1,
+    observers,
+  });
+}
+
+function scheduleObserverActivityWrite() {
+  if (observerActivityWriteTimer) {
+    return;
+  }
+  observerActivityWriteTimer = setTimeout(() => {
+    observerActivityWriteTimer = null;
+    writeObserverActivityFile();
+  }, 250);
+}
+
 if (!fs.existsSync(OBSERVERS_FILE_PATH)) {
   writeObserverNamesFile();
 }
@@ -776,17 +1047,21 @@ if (!fs.existsSync(RESULTS_FILE_PATH) && !DISABLE_RESULTS_FILE_WRITES) {
 
 function createObserverRecord(observerKey) {
   const profile = observerProfiles.get(observerKey) || null;
+  const activity = observerActivityHistory.get(observerKey) || null;
   const lat = normalizeCoordinate(profile?.lat ?? null, 'lat');
   const lon = normalizeCoordinate(profile?.lon ?? null, 'lon');
+  const regionInfo = deriveRegionInfo(lat, lon);
+  const lastPacketAt = Math.max(0, Number(activity?.lastPacketAt || 0));
   return {
     key: observerKey,
     hash: hashFromKeyPrefix(observerKey),
     name: profile?.name || null,
     lat,
     lon,
-    region: deriveRegion(lat, lon),
-    firstSeenAt: 0,
-    lastPacketAt: 0,
+    region: regionInfo.region,
+    regionGroup: regionInfo.regionGroup,
+    firstSeenAt: lastPacketAt,
+    lastPacketAt,
     packetCount: 0,
   };
 }
@@ -948,6 +1223,9 @@ function primeObserverDirectory() {
   for (const key of observerProfiles.keys()) {
     ensureObserverRecord(key);
   }
+  for (const key of observerActivityHistory.keys()) {
+    ensureObserverRecord(key);
+  }
   for (const key of KNOWN_OBSERVERS) {
     ensureObserverRecord(key);
   }
@@ -1029,6 +1307,9 @@ function escapeHtml(value) {
 }
 
 function requestOrigin(request) {
+  if (SITE_URL) {
+    return SITE_URL;
+  }
   const protocol = request.protocol || (request.secure ? 'https' : 'http');
   const host = request.get('host') || 'localhost';
   return `${protocol}://${host}`;
@@ -1063,10 +1344,6 @@ function renderHtmlTemplate(template, request, pageTitleSuffix = '') {
 }
 
 function clientAddress(requestLike) {
-  const forwardedFor = requestLike.headers?.['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    return forwardedFor.split(',')[0].trim();
-  }
   return (
     requestLike.ip ||
     requestLike.socket?.remoteAddress ||
@@ -1276,19 +1553,26 @@ function extractDeviceName(obj, topic = '') {
   }
 
   for (const key of [
-    'name',
-    'device_name',
-    'deviceName',
-    'node_name',
-    'nodeName',
     'display_name',
     'displayName',
+    'node_name',
+    'nodeName',
+    'device_name',
+    'deviceName',
     'callsign',
     'label',
+    'name',
   ]) {
     const value = obj[key];
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
+    }
+  }
+
+  if (String(topic || '').endsWith('/status')) {
+    const origin = obj.origin;
+    if (typeof origin === 'string' && origin.trim()) {
+      return origin.trim();
     }
   }
 
@@ -1537,15 +1821,69 @@ function activeObserverKeys(now = Date.now()) {
   return dedupe(keys.sort());
 }
 
-function defaultObserverTarget() {
+function observerDisplayLabelForKey(observerKey) {
+  const observer = observerState.get(observerKey);
+  const profile = observerProfiles.get(observerKey);
+  return String(observer?.name || profile?.name || shortKey(observerKey));
+}
+
+function topObserverKeys(now = Date.now()) {
+  const dayKeys = new Set(recentUtcDayKeys(OBSERVER_TOP_WINDOW_DAYS, now));
+  const ranked = [];
+
+  for (const [key, entry] of observerActivityHistory.entries()) {
+    const lastPacketAt = Math.max(0, Number(entry?.lastPacketAt || 0));
+    if (OBSERVER_RETENTION_MS > 0 && (!lastPacketAt || now - lastPacketAt > OBSERVER_RETENTION_MS)) {
+      continue;
+    }
+    let total = 0;
+    for (const dayKey of dayKeys) {
+      total += Math.max(0, Math.floor(Number(entry?.days?.[dayKey] || 0)));
+    }
+    if (total <= 0) {
+      continue;
+    }
+    ranked.push({
+      key,
+      total,
+      lastPacketAt,
+      label: observerDisplayLabelForKey(key),
+    });
+  }
+
+  ranked.sort((left, right) => {
+    if (left.total !== right.total) {
+      return right.total - left.total;
+    }
+    if (left.lastPacketAt !== right.lastPacketAt) {
+      return right.lastPacketAt - left.lastPacketAt;
+    }
+    const byLabel = left.label.localeCompare(right.label);
+    if (byLabel !== 0) {
+      return byLabel;
+    }
+    return left.key.localeCompare(right.key);
+  });
+
+  return ranked.slice(0, OBSERVER_TOP_COUNT).map((entry) => entry.key);
+}
+
+function defaultObserverTarget(now = Date.now()) {
   if (KNOWN_OBSERVERS.length > 0) {
     return {
       keys: [...KNOWN_OBSERVERS],
       source: 'configured',
     };
   }
+  const topKeys = topObserverKeys(now);
+  if (topKeys.length > 0) {
+    return {
+      keys: topKeys,
+      source: 'top-window',
+    };
+  }
   return {
-    keys: activeObserverKeys(),
+    keys: activeObserverKeys(now),
     source: 'active-window',
   };
 }
@@ -1573,6 +1911,7 @@ function serializeObserver(observer) {
     lon: observer.lon ?? null,
     hasLocation: observer.lat != null && observer.lon != null,
     region: observer.region ?? null,
+    regionGroup: observer.regionGroup ?? null,
     shortKey: shortKey(observer.key),
     packetCount: observer.packetCount,
     firstSeenAt: observer.firstSeenAt,
@@ -1603,6 +1942,8 @@ function serializeObserverForKey(observerKey) {
       lat: null,
       lon: null,
       hasLocation: false,
+      region: null,
+      regionGroup: null,
       shortKey: shortKey(observerKey),
       packetCount: 0,
       firstSeenAt: 0,
@@ -1636,6 +1977,65 @@ function observerDirectory() {
     .map(serializeObserver);
 }
 
+function buildRegionHierarchy(directory) {
+  const groups = new Map();
+  const ungrouped = new Map();
+
+  for (const observer of directory) {
+    if (!observer.region) {
+      continue;
+    }
+    const count = Number.isInteger(observer.packetCount) ? observer.packetCount : 0;
+    if (observer.regionGroup) {
+      if (!groups.has(observer.regionGroup)) {
+        groups.set(observer.regionGroup, {
+          group: observer.regionGroup,
+          count: 0,
+          regions: new Map(),
+        });
+      }
+      const group = groups.get(observer.regionGroup);
+      group.count += 1;
+      const region = group.regions.get(observer.region) || {
+        name: observer.region,
+        count: 0,
+        packetCount: 0,
+      };
+      region.count += 1;
+      region.packetCount += count;
+      group.regions.set(observer.region, region);
+    } else {
+      const region = ungrouped.get(observer.region) || {
+        name: observer.region,
+        count: 0,
+        packetCount: 0,
+      };
+      region.count += 1;
+      region.packetCount += count;
+      ungrouped.set(observer.region, region);
+    }
+  }
+
+  const byName = (left, right) => String(left.name || left.group).localeCompare(String(right.name || right.group));
+  const out = [...groups.values()]
+    .map((group) => ({
+      group: group.group,
+      count: group.count,
+      regions: [...group.regions.values()].sort(byName),
+    }))
+    .sort(byName);
+
+  if (ungrouped.size > 0) {
+    out.push({
+      group: '',
+      count: [...ungrouped.values()].reduce((sum, region) => sum + region.count, 0),
+      regions: [...ungrouped.values()].sort(byName),
+    });
+  }
+
+  return out;
+}
+
 function sharePathForSession(session) {
   return `/share/${encodeURIComponent(session.id)}`;
 }
@@ -1648,11 +2048,172 @@ function shareUrlForSession(session, request = null) {
   return `${requestOrigin(request)}${sharePath}`;
 }
 
+function observerDisplayLabel(observer, fallbackKey = '') {
+  return observer?.name || (fallbackKey ? shortKey(fallbackKey) : '');
+}
+
+function observerForPathHop(hop, terminalObserverKey = '') {
+  const normalizedHop = normalizePathHop(hop);
+  if (!normalizedHop) {
+    return null;
+  }
+  const terminalKey = normalizeKey(terminalObserverKey);
+  if (terminalKey && terminalKey.startsWith(normalizedHop)) {
+    return observerState.get(terminalKey) || null;
+  }
+  const matches = [...observerState.values()]
+    .filter((observer) => observer?.key?.startsWith(normalizedHop));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function distanceKmBetween(left, right) {
+  if (
+    left?.lat == null || left?.lon == null ||
+    right?.lat == null || right?.lon == null
+  ) {
+    return null;
+  }
+  const earthRadiusKm = 6371.0088;
+  const toRadians = (value) => (Number(value) * Math.PI) / 180;
+  const leftLat = toRadians(left.lat);
+  const rightLat = toRadians(right.lat);
+  const latDelta = toRadians(Number(right.lat) - Number(left.lat));
+  const lonDelta = toRadians(Number(right.lon) - Number(left.lon));
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(leftLat) * Math.cos(rightLat) * Math.sin(lonDelta / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function convertDistance(km) {
+  if (!Number.isFinite(km)) {
+    return null;
+  }
+  return DISTANCE_UNIT === 'km' ? km : km * 0.621371;
+}
+
+function formatDistance(value) {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  const rounded = value < 10 ? Math.round(value * 10) / 10 : Math.round(value);
+  return `${rounded.toLocaleString('en-US')} ${DISTANCE_UNIT}`;
+}
+
+function receiptDistanceEstimate(report) {
+  const path = Array.isArray(report?.path)
+    ? report.path.map(normalizePathHop).filter(Boolean)
+    : [];
+  const resolved = path
+    .map((hop, index) => ({
+      hop,
+      index,
+      observer: observerForPathHop(hop, report.observerKey),
+      hasLocation: false,
+    }))
+    .map((entry) => ({
+      ...entry,
+      hasLocation: entry.observer?.lat != null && entry.observer?.lon != null,
+    }));
+  const located = resolved.filter((entry) => entry.hasLocation);
+  const segments = [];
+  for (let index = 1; index < located.length; index += 1) {
+    const from = located[index - 1];
+    const to = located[index];
+    if (from.observer.key === to.observer.key) {
+      continue;
+    }
+    const km = distanceKmBetween(from.observer, to.observer);
+    const distance = convertDistance(km);
+    if (!Number.isFinite(distance)) {
+      continue;
+    }
+    segments.push({
+      fromHash: from.hop,
+      toHash: to.hop,
+      fromLabel: observerDisplayLabel(from.observer, from.observer.key),
+      toLabel: observerDisplayLabel(to.observer, to.observer.key),
+      skippedHopCount: Math.max(0, to.index - from.index - 1),
+      estimated: to.index - from.index > 1,
+      distance,
+      distanceText: formatDistance(distance),
+    });
+  }
+  const distance = segments.reduce((sum, segment) => sum + segment.distance, 0);
+  return {
+    distance: segments.length > 0 ? distance : null,
+    distanceText: segments.length > 0 ? formatDistance(distance) : '',
+    segments,
+    locatedHopCount: located.length,
+    estimatedSegmentCount: segments.filter((segment) => segment.estimated).length,
+  };
+}
+
+function observerSpanDistanceEstimate(reports) {
+  const locatedReceipts = reports
+    .map((report) => {
+      const observer = observerState.get(report.observerKey);
+      return observer?.lat != null && observer?.lon != null
+        ? { report, observer }
+        : null;
+    })
+    .filter(Boolean);
+  let best = null;
+  for (let leftIndex = 0; leftIndex < locatedReceipts.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < locatedReceipts.length; rightIndex += 1) {
+      const left = locatedReceipts[leftIndex];
+      const right = locatedReceipts[rightIndex];
+      const distance = convertDistance(distanceKmBetween(left.observer, right.observer));
+      if (!Number.isFinite(distance) || distance <= 0) {
+        continue;
+      }
+      if (!best || distance > best.distance) {
+        best = {
+          distance,
+          distanceText: formatDistance(distance),
+          fromLabel: observerDisplayLabel(left.observer, left.report.observerKey),
+          toLabel: observerDisplayLabel(right.observer, right.report.observerKey),
+        };
+      }
+    }
+  }
+  return best;
+}
+
+function receiptObserverSpanDistanceEstimate(report, reports) {
+  const sourceObserver = observerState.get(report?.observerKey);
+  if (sourceObserver?.lat == null || sourceObserver?.lon == null) {
+    return null;
+  }
+  let best = null;
+  for (const otherReport of reports) {
+    if (otherReport.observerKey === report.observerKey) {
+      continue;
+    }
+    const otherObserver = observerState.get(otherReport.observerKey);
+    if (otherObserver?.lat == null || otherObserver?.lon == null) {
+      continue;
+    }
+    const distance = convertDistance(distanceKmBetween(sourceObserver, otherObserver));
+    if (!Number.isFinite(distance) || distance <= 0) {
+      continue;
+    }
+    if (!best || distance > best.distance) {
+      best = {
+        distance,
+        distanceText: formatDistance(distance),
+        toLabel: observerDisplayLabel(otherObserver, otherReport.observerKey),
+      };
+    }
+  }
+  return best;
+}
+
 function serializeSession(session, request = null) {
   const allReports = [...session.receipts.values()]
     .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
     .map((report) => {
       const observer = observerState.get(report.observerKey);
+      const distanceEstimate = receiptDistanceEstimate(report);
       return {
         observerKey: report.observerKey,
         observerHash: report.observerHash,
@@ -1670,6 +2231,10 @@ function serializeSession(session, request = null) {
         snr: report.snr,
         duration: report.duration,
         path: report.path,
+        pathDistance: distanceEstimate.distance,
+        pathDistanceText: distanceEstimate.distanceText,
+        pathDistanceSegments: distanceEstimate.segments,
+        pathLocatedHopCount: distanceEstimate.locatedHopCount,
       };
     });
 
@@ -1677,9 +2242,49 @@ function serializeSession(session, request = null) {
   const reports = session.allowlistEnabled && expected.length > 0
     ? allReports.filter((report) => expected.includes(normalizeKey(report.observerKey)))
     : allReports;
+  for (const report of reports) {
+    if (report.pathDistance != null && Number.isFinite(Number(report.pathDistance))) {
+      report.displayDistance = report.pathDistance;
+      report.displayDistanceText = report.pathDistanceText;
+      report.displayDistanceSource = 'path';
+      continue;
+    }
+    const observerSpan = receiptObserverSpanDistanceEstimate(report, reports);
+    if (observerSpan) {
+      report.displayDistance = observerSpan.distance;
+      report.displayDistanceText = observerSpan.distanceText;
+      report.displayDistanceSource = 'observer-span';
+      report.displayDistanceLabel = `farthest observer: ${observerSpan.toLabel}`;
+    } else {
+      report.displayDistance = null;
+      report.displayDistanceText = '';
+      report.displayDistanceSource = '';
+      report.displayDistanceLabel = '';
+    }
+  }
   const seen = dedupe(reports.map((report) => normalizeKey(report.observerKey)));
+  const repeaters = dedupe(
+    reports.flatMap((report) =>
+      Array.isArray(report.path)
+        ? report.path
+          .slice(0, Math.max(0, report.path.length - 1))
+          .map(normalizePathHop)
+          .filter(Boolean)
+        : []
+    ),
+  );
   const denominator = Math.max(1, expected.length, seen.length);
   const percent = Math.round((seen.length / denominator) * 100);
+  const longestPacketDistance = reports
+    .map((report) => Number(report.pathDistance))
+    .filter((value) => Number.isFinite(value))
+    .reduce((max, value) => Math.max(max, value), 0);
+  const observerSpanDistance = longestPacketDistance > 0
+    ? null
+    : observerSpanDistanceEstimate(reports);
+  const bestDistance = longestPacketDistance > 0
+    ? longestPacketDistance
+    : Number(observerSpanDistance?.distance || 0);
 
   return {
     id: session.id,
@@ -1700,6 +2305,19 @@ function serializeSession(session, request = null) {
     channelHash: session.channelHash,
     channelName: session.channelName,
     observedCount: seen.length,
+    repeaterCount: repeaters.length,
+    distanceUnit: DISTANCE_UNIT,
+    longestPacketDistance: bestDistance > 0 ? bestDistance : null,
+    longestPacketDistanceText: bestDistance > 0 ? formatDistance(bestDistance) : '',
+    longestPacketDistanceSource: longestPacketDistance > 0
+      ? 'path'
+      : (observerSpanDistance ? 'observer-span' : ''),
+    longestPacketDistancePair: observerSpanDistance
+      ? {
+          fromLabel: observerSpanDistance.fromLabel,
+          toLabel: observerSpanDistance.toLabel,
+        }
+      : null,
     expectedCount: denominator,
     healthPercent: percent,
     healthLabel: healthLabel(percent),
@@ -1725,6 +2343,7 @@ function snapshotPayload() {
   const defaultTarget = defaultObserverTarget();
   const defaultObservers = defaultTarget.keys.map((key) => serializeObserverForKey(key));
   const dashboardBrokerHost = DASH_BROKER_HOST || brokerLabel(MQTT_URL);
+  const regionHierarchy = buildRegionHierarchy(directory);
 
   return {
     serverTime: Date.now(),
@@ -1736,6 +2355,7 @@ function snapshotPayload() {
       description: APP_DESCRIPTION,
       repoUrl: REPO_URL,
       changesUrl: `${REPO_URL}/blob/main/CHANGES.md`,
+      coreScopeUrl: CORESCOPE_URL,
       externalLinkUrl: EXTERNAL_LINK_URL,
       externalLinkLabel: EXTERNAL_LINK_LABEL,
     },
@@ -1753,6 +2373,10 @@ function snapshotPayload() {
       retentionSeconds: Math.round(OBSERVER_RETENTION_MS / 1000),
       activeCount: activeObservers.length,
       windowSeconds: Math.round(OBSERVER_ACTIVE_WINDOW_MS / 1000),
+      topWindowDays: OBSERVER_TOP_WINDOW_DAYS,
+      topCount: OBSERVER_TOP_COUNT,
+      hashDisplayBytes: OBSERVER_HASH_DISPLAY_BYTES,
+      distanceUnit: DISTANCE_UNIT,
     },
     results: {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
@@ -1762,7 +2386,9 @@ function snapshotPayload() {
     defaultObserverSource: defaultTarget.source,
     observerDirectory: directory,
     activeObservers,
+    regionHierarchy,
     availableRegions: [...new Set(directory.map((o) => o.region).filter(Boolean))].sort(),
+    availableRegionGroups: regionHierarchy.map((entry) => entry.group).filter(Boolean),
     testChannel: {
       name: testChannelName,
       hash: testChannelHash || null,
@@ -1796,19 +2422,55 @@ function touchObserver(observerKey) {
   return observer;
 }
 
-function updateObserverName(observerKey, name) {
+function noteObserverPacketActivity(observerKey, timestamp = Date.now()) {
+  const normalizedKey = normalizeKey(observerKey);
+  const normalizedTimestamp = Number(timestamp);
+  if (!normalizedKey || !Number.isFinite(normalizedTimestamp) || normalizedTimestamp <= 0) {
+    return false;
+  }
+  const dayKey = utcDayKey(normalizedTimestamp);
+  const entry = observerActivityHistory.get(normalizedKey) || {
+    days: {},
+    lastPacketAt: 0,
+  };
+  const nextCount = Math.max(0, Math.floor(Number(entry.days?.[dayKey] || 0))) + 1;
+  const nextLastPacketAt = Math.max(Number(entry.lastPacketAt || 0), normalizedTimestamp);
+  const changed = Number(entry.days?.[dayKey] || 0) !== nextCount
+    || Number(entry.lastPacketAt || 0) !== nextLastPacketAt;
+  entry.days = {
+    ...(entry.days || {}),
+    [dayKey]: nextCount,
+  };
+  entry.lastPacketAt = nextLastPacketAt;
+  observerActivityHistory.set(normalizedKey, entry);
+  if (changed) {
+    scheduleObserverActivityWrite();
+  }
+  return changed;
+}
+
+function updateObserverName(observerKey, name, options = {}) {
   const normalizedKey = normalizeKey(observerKey);
   const cleanName = String(name || '').trim();
   if (!normalizedKey || !cleanName) {
     return false;
   }
-  const previous = observerProfiles.get(normalizedKey)?.name || '';
+  const profile = observerProfiles.get(normalizedKey) || { name: '', lat: null, lon: null };
+  const previous = String(profile.name || '').trim();
   const observer = ensureObserverRecord(normalizedKey);
   if (!observer) {
     return false;
   }
+  if (
+    pinnedObserverNameKeys.has(normalizedKey) &&
+    previous &&
+    previous !== cleanName &&
+    !options.allowPinnedOverride
+  ) {
+    observer.name = previous;
+    return false;
+  }
   const changed = previous !== cleanName || observer.name !== cleanName;
-  const profile = observerProfiles.get(normalizedKey) || { name: '', lat: null, lon: null };
   observerProfiles.set(normalizedKey, { ...profile, name: cleanName });
   observer.name = cleanName;
   if (changed) {
@@ -1834,6 +2496,9 @@ function updateObserverLocation(observerKey, location) {
   observerProfiles.set(normalizedKey, { ...profile, lat, lon });
   observer.lat = lat;
   observer.lon = lon;
+  const regionInfo = deriveRegionInfo(lat, lon);
+  observer.region = regionInfo.region;
+  observer.regionGroup = regionInfo.regionGroup;
   if (changed) {
     logger.debug(`[observer] location ${normalizedKey} -> ${lat}, ${lon}`);
     scheduleObserverNamesWrite();
@@ -2031,6 +2696,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   if (!observer) {
     return;
   }
+  noteObserverPacketActivity(observer.key);
 
   const { raw, envelope } = parseEnvelope(payloadBuffer);
   if (!raw) {
@@ -2051,9 +2717,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     ? packet.payload.decoded
     : null;
   const decodedPayloadObserverKey = normalizeKey(decodedPayload?.publicKey || '');
-  const shouldLearnPacketMetadata = Boolean(
-    decodedPayloadObserverKey && decodedPayloadObserverKey === observer.key,
-  );
+  const shouldLearnPacketMetadata = Boolean(decodedPayloadObserverKey);
   let metadataChanged = false;
   const decodedAppData = shouldLearnPacketMetadata
     && decodedPayload?.appData
@@ -2064,8 +2728,16 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     if (!metadataSource) {
       continue;
     }
+    const extractedName = extractDeviceName(metadataSource, topic);
+    if (extractedName) {
+      metadataChanged = updateObserverName(
+        decodedPayloadObserverKey,
+        extractedName,
+        { allowPinnedOverride: true },
+      ) || metadataChanged;
+    }
     metadataChanged = updateObserverLocation(
-      observer.key,
+      decodedPayloadObserverKey,
       extractObserverLocation(metadataSource),
     ) || metadataChanged;
   }
@@ -2196,6 +2868,9 @@ app.use((request, response, next) => {
   response.setHeader('X-Frame-Options', 'DENY');
   response.setHeader('Referrer-Policy', 'no-referrer');
   response.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  if (request.path.startsWith('/api/') || request.path.startsWith('/share/')) {
+    response.setHeader('Cache-Control', 'no-store');
+  }
   response.setHeader(
     'Content-Security-Policy',
     [
@@ -2228,8 +2903,8 @@ app.get('/manifest.webmanifest', (request, response) => {
     scope: '/',
     display: 'standalone',
     display_override: ['standalone', 'minimal-ui'],
-    background_color: '#101512',
-    theme_color: '#101512',
+    background_color: '#07111d',
+    theme_color: '#07111d',
     icons: [
       {
         src: '/logo.png',
@@ -2365,7 +3040,7 @@ app.get('/share/:sessionId', (request, response) => {
   sendShare(request, response);
 });
 
-app.get('*', (request, response) => {
+app.get(/.*/, (request, response) => {
   if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
     response.redirect('/');
     return;
@@ -2500,6 +3175,13 @@ export function resetTestState() {
   rateLimitBuckets.clear();
   turnstileAuthTokens.clear();
   observerState.clear();
+  observerActivityHistory.clear();
+  for (const [key, entry] of baselineObserverActivityHistory.entries()) {
+    observerActivityHistory.set(key, {
+      days: { ...(entry?.days || {}) },
+      lastPacketAt: Number(entry?.lastPacketAt || 0),
+    });
+  }
   primeObserverDirectory();
   if (!DISABLE_RESULTS_FILE_WRITES) {
     writeResultsFile();
@@ -2527,7 +3209,14 @@ export function ingestMqttMessage(topic, payload) {
   }
 }
 
-export { app, server };
+export {
+  app,
+  server,
+  APP_DATA_DIR,
+  OBSERVERS_FILE_PATH,
+  OBSERVER_ACTIVITY_FILE_PATH,
+  RESULTS_FILE_PATH,
+};
 
 if (IS_MAIN_MODULE && !DISABLE_RUNTIME) {
   startRuntime();

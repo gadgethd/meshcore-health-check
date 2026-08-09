@@ -14,60 +14,120 @@ summarizes observer coverage.
 
 - Docker and Docker Compose
 - network access to the MQTT broker
-- a valid MeshCore channel name and secret
-- optional observer name mappings in
-  [data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json)
-- writable retained results storage in `data/session-results.json`
+- a valid MeshCore channel name and secret or channel hash
+- writable `data/` storage for observer profiles, observer activity, and
+  retained share-link results
 
 ## Setup
 
-1. Copy the template:
+You can either clone the repo and build locally, or run the published Docker
+image directly.
+
+### Build From Source
+
+1. Clone the repo:
+
+```bash
+git clone https://github.com/yellowcooln/meshcore-health-check.git
+cd meshcore-health-check
+```
+
+2. Copy the template:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Edit [`.env`](/home/yellowcooln/mesh-health-check/.env):
+3. Edit `.env`:
 
 - set MQTT connectivity
 - set `TEST_CHANNEL_NAME`
-- set `TEST_CHANNEL_SECRET`
-- set `KNOWN_OBSERVERS` if you want a fixed default scoring set
-- set `OBSERVER_RETENTION_SECONDS` if old observers should disappear from the
-  dashboard directory and map after a chosen age
-  Set it to `0` to disable pruning and keep known observers visible.
-- set `DASH_BROKER_HOST` if the UI should show a public broker label instead of
-  the internal Docker or LAN broker hostname
+- set `TEST_CHANNEL_SECRET` or `TEST_CHANNEL_HASH`
+- set `KNOWN_OBSERVERS` only if you want a fixed default observer target
+- leave `KNOWN_OBSERVERS` blank if the app should auto-select top recent
+  observers from packet history
+- set `REGIONS_FILE` if you want region buttons above the observer selector
+- set `SITE_URL` to the public HTTPS origin when running behind a reverse proxy
+- keep `TRUST_PROXY=1` behind one trusted reverse proxy, or set it to `false`
+  when exposing the app directly
 - enable Turnstile if the site is internet-facing
-- leave `LOG_LEVEL=info` unless you are actively troubleshooting
+- leave `LOG_LEVEL=info` unless actively troubleshooting
 
-3. Start the service:
+See [ENVIRONMENT.md](ENVIRONMENT.md) for the full variable reference.
+
+4. Start the service:
 
 ```bash
 docker compose up -d --build
 ```
 
-4. Put it behind your reverse proxy or use `http://localhost:3090`.
+5. Open `http://localhost:3090` or put the service behind your reverse proxy.
 
-## What Users See
+### Run The Published Image
+
+Use this path when you do not want to keep a git checkout on the host.
+
+1. Create a new folder:
+
+```bash
+mkdir meshcore-health-check
+cd meshcore-health-check
+mkdir -p data
+```
+
+2. Create `.env` from the variables documented in
+[ENVIRONMENT.md](ENVIRONMENT.md). At minimum, set MQTT and channel values.
+
+3. Create `docker-compose.yml`:
+
+```yaml
+services:
+  mesh-health-check:
+    image: yellowcooln/meshcore-health-check:latest
+    container_name: mesh-health-check
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      PORT: "3090"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "3090:3090"
+```
+
+4. Start it:
+
+```bash
+docker compose up -d
+```
+
+Image tags:
+
+- `main` is the production branch.
+- `yellowcooln/meshcore-health-check:latest` is the Docker image tag built
+  from `main`.
+- `yellowcooln/meshcore-health-check:dev` is the Docker image tag built from
+  `dev`.
+- Release tags and short-SHA tags are also published by the Docker workflow.
+
+## User Flow
 
 1. The user opens the site.
 2. If Turnstile is enabled, the user solves the challenge on `/`.
 3. The dashboard loads and creates a code.
 4. The user sends that code to the configured channel.
-5. The app waits for a matching channel message and then aggregates receipts for
-   the same message hash.
-6. The dashboard shows health, observer-by-observer receipts, and path detail.
-7. If observer coordinates are known, the dashboard also shows a coverage map
-   and a receipt timeline.
-8. The user can copy a share link for the current result.
-9. In supported browsers, the dashboard can also be installed as a standalone
-   app.
+5. The backend matches the code to the message hash seen by MQTT observers.
+6. The dashboard shows health, receipts, path detail, repeaters, and map
+   coverage when coordinates are known.
+7. The user can copy a retained `/share/:sessionId` result link.
 
-Users can either:
+Users can run a check against:
 
-- use the default observer set from `KNOWN_OBSERVERS`
-- pick a custom observer set in the browser for the next code only
+- the fixed `KNOWN_OBSERVERS` target set
+- the dynamic top-observer set when `KNOWN_OBSERVERS` is blank
+- a browser-selected custom observer set
+- a configured region group or child region
 
 ## Result Meaning
 
@@ -75,75 +135,85 @@ Users can either:
 - `GOOD` or `FAIR`: partial target coverage
 - `POOR`: very limited coverage or no receipts yet
 
-Each code:
-- expires after `SESSION_TTL_SECONDS`
-- can be used up to `MAX_USES_PER_CODE` times
-- keeps prior results in browser-local history only for that browser session
+Each code expires after `SESSION_TTL_SECONDS` and can be used up to
+`MAX_USES_PER_CODE` times. Shared results are retained server-side for
+`RESULT_RETENTION_SECONDS` and then pruned automatically.
 
-Shared results:
-- are retained server-side for `RESULT_RETENTION_SECONDS`
-- default to one week
-- are pruned automatically once the retention window expires
-- live at `/share/:sessionId`
+## Observer Data
 
-## Observer Naming
+The app loads `data/observer.json` at startup so known names and coordinates are
+available before fresh MQTT metadata arrives. If MQTT metadata publishes a
+better name or location, the server writes it back to that file.
 
-The app loads
-[data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json) at startup
-so known names and coordinates are available immediately. If MQTT metadata later
-publishes a better name or location, the server writes it back to that file.
-
-Without `data/observer.json`, unnamed observers show as shortened pubkeys until
+Without `data/observer.json`, unnamed observers show as hash prefixes until
 metadata propagates. Observers without coordinates still work for scoring, but
-they will not appear on the map until MQTT metadata or a saved profile provides
-`lat` and `lon`.
+they do not appear on the map.
 
-## Why Turnstile Is Highly Recommended
+The dynamic default observer set is stored in `data/observer-activity.json`.
+When `KNOWN_OBSERVERS` is blank, the app ranks observers over
+`OBSERVER_TOP_WINDOW_DAYS` and selects up to `OBSERVER_TOP_COUNT` observers.
 
-If the site is public, bots can create codes just like real users. Rate limits
-help, but Turnstile is still the cleanest first line of defense.
+When path hops can be matched to observers with coordinates, the app estimates
+distance between those observers and shows the longest packet-path distance for
+the check. Set `DISTANCE_UNIT=mi` or `DISTANCE_UNIT=km` to choose the displayed
+unit. If the path hops are not known observers with coordinates, the longest
+packet metric falls back to the farthest pair of receipt observers that saw the
+message. When known observer anchors exist on both sides of unknown or
+no-coordinate hops, the app estimates across that gap and labels it as
+estimated. The `Who saw the message` cards show the receipt's path distance
+when available, otherwise they show an observer-span distance to the farthest
+other located observer in the result.
 
-Turnstile reduces:
+## Region Filters
 
-- automated session creation
-- junk traffic against the landing page and session endpoint
-- abuse of a public health-check surface backed by your observer mesh
+Set `REGIONS_FILE` to a GeoJSON FeatureCollection to enable region targeting.
+The bundled files include:
 
-If the site is private and reachable only on an internal network, Turnstile is
-optional. If the site is public, it should be enabled.
+- `regions/us-states.geojson` for grouped US state filtering such as
+  `New England -> Massachusetts`
+- `regions/us-places.geojson` for city/place-level US filtering
+- `regions/uk.geojson` for UK regional filtering
+- `regions/de-bundeslaender.geojson` for German state filtering
+
+The server uses `REGION_NAME_PROPERTY` for child labels and
+`REGION_GROUP_PROPERTY` for parent groups. If the GeoJSON has no usable group
+property, the UI falls back to a flat region button list.
+
+## Turnstile
+
+Turnstile is recommended for public deployments because public users and bots
+can create codes. Rate limits help, but Turnstile is the cleaner first line of
+defense. Private/internal deployments can disable it.
 
 ## Operational Notes
 
 - The app only decodes the configured test channel.
-- `DASH_BROKER_HOST` affects only the dashboard label shown to users. MQTT
-  still connects to `MQTT_HOST` or `MQTT_URL`.
-- Default observer scoring comes from `KNOWN_OBSERVERS` if set, otherwise from
-  the active observer window.
-- Observers that have not been heard from within `OBSERVER_RETENTION_SECONDS`
-  are omitted from the dashboard directory and map.
-- `data/` is bind-mounted so learned observer names and retained share links
-  survive rebuilds.
-- Port `3090` should stay private to your reverse proxy or internal network.
-- `LOG_LEVEL=debug` is useful only when you are tracing MQTT ingest or decode
-  problems.
-- `EXTERNAL_LINK_URL` and `EXTERNAL_LINK_LABEL` control the optional hero CTA.
-  Leave them blank to hide it.
-- installable app support does not require extra env configuration; it uses the
-  manifest and service worker bundled with the app
+- Docker Compose is the intended runtime path.
+- Keep `data/` bind-mounted so learned observer names, observer history, and
+  retained share links survive rebuilds.
+- Keep port `3090` private to your reverse proxy or internal network.
+- Set `SITE_URL` behind a reverse proxy so share links and social previews use
+  the public site URL instead of an internal Docker hostname.
+- Set `CORESCOPE_URL` to a CoreScope root such as
+  `https://analyzer.newenglandme.sh` to open matched message hashes in
+  CoreScope.
+- `DASH_BROKER_HOST` affects only the dashboard label shown to users.
+- `OBSERVER_HASH_DISPLAY_BYTES` affects only observer prefix display.
+- `OBSERVER_RETENTION_SECONDS=0` disables stale-observer pruning.
+- `LOG_LEVEL=debug` is useful only when tracing MQTT ingest or decode issues.
 
 ## Troubleshooting
 
-- `MQTT offline`: check broker settings and credentials in `.env`
+- `MQTT offline`: check broker settings and credentials in `.env`.
 - `WAITING` forever: verify the code was sent to the correct channel and that
-  the message reached MQTT
-- shared result says it is unavailable: the retained result likely expired and
-  was pruned from `data/session-results.json`
-- raw pubkeys instead of names: add mappings to `data/observer.json` or wait for
-  metadata to propagate
-- map missing some observers: they do not have saved coordinates yet
-- no install prompt: the browser may not consider the site installable yet, or
-  it may not support install prompts on that platform
-- Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key
-- Turnstile always fails: verify the hostname is allowed in Cloudflare
-- low scores: the packet may have had limited reach, or your default target set
-  may be stricter than the currently active observer window
+  the packet reached MQTT.
+- Shared result unavailable: confirm `RESULTS_FILE` is under mounted `data/`
+  and the result has not exceeded `RESULT_RETENTION_SECONDS`.
+- Raw pubkeys instead of names: add mappings to `data/observer.json` or wait
+  for MQTT metadata.
+- Map missing observers: confirm they have valid saved coordinates and are not
+  filtered by `OBSERVER_RETENTION_SECONDS`.
+- Region button missing: confirm `REGIONS_FILE` points to a readable GeoJSON
+  file and observer coordinates fall inside that file.
+- Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key.
+- Turnstile always fails: verify the hostname is allowed in Cloudflare.

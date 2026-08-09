@@ -1,10 +1,9 @@
 # Mesh Health Check
 
-Mesh Health Check is a self-hosted web app that measures MeshCore message
-coverage across your MQTT-connected observer network. It gives the user a short
-code, waits for that code to appear in the configured MeshCore group channel,
-then scores the result based on how many selected observers reported the same
-message hash.
+Mesh Health Check is a self-hosted web app for measuring MeshCore message
+coverage across MQTT-connected observers. It generates a short code, watches the
+configured MeshCore group channel for that code, then scores how many selected
+observers reported the matching message hash.
 
 The idea for this app came from Nick D from Boston.
 
@@ -16,153 +15,99 @@ Other community Health Checks:
 ![Coverage example 2](image2.png)
 ![Coverage example 3](image3.png)
 
-## Features
+## What It Does
 
-- short-lived reusable test codes with expiry and per-code use limits
-- observer-by-observer receipt tracking with path, RSSI, SNR, and duration data
-- observer timeline view showing when each observer first saw the message
-- observer coverage map with dark/light basemap toggle
-- shareable result links backed by retained server-side session storage
-- installable browser app support via manifest + service worker
-- default observer target sets plus browser-side custom observer selection
-- persistent observer profiles through
-  [observer.json](/home/yellowcooln/mesh-health-check/observer.json)
-- MQTT-learned observer locations saved back into `observer.json`
-- Cloudflare Turnstile landing page for bot protection
-- optional external hero link driven by env
-- Docker-first deployment behind Nginx or Cloudflare
-- fixture, API, and smoke-test coverage in CI
+- creates short-lived health-check codes
+- matches MeshCore `GroupText` packets from MQTT
+- scores observer coverage against a default or custom observer set
+- shows receipts, paths, RSSI, SNR, timing, repeaters, and map coverage
+- estimates packet-path distance between known observers, with mile or
+  kilometer labels
+- learns observer names and locations from MQTT metadata
+- tracks recent observer activity and can auto-select the top observers
+- supports region filters from GeoJSON boundary files
+- keeps retained `/share/:sessionId` result links
+- supports Cloudflare Turnstile and installable PWA behavior
 
-## How It Works
+## Quick Start
 
-1. A visitor opens the site and gets a code such as `MHC-AB12CD`.
-2. The user sends that code to the configured MeshCore channel.
-3. The backend watches the MQTT observer feed for that channel only.
-4. When the matching `GroupText` message appears, the app ties all receipts for
-   the same message hash to that code.
-5. The UI computes coverage against either the default observer set or the
-   user’s custom selection for that code.
-
-Each code:
-- expires after `SESSION_TTL_SECONDS`
-- can be used up to `MAX_USES_PER_CODE` times
-- keeps browser history local to the current browser session
-- keeps shareable results on the server until `RESULT_RETENTION_SECONDS`
-
-## Project Layout
-
-- [server.js](/home/yellowcooln/mesh-health-check/server.js): Express app,
-  MQTT ingest, session matching, observer persistence, Turnstile verification,
-  WebSocket updates
-- [public/](/home/yellowcooln/mesh-health-check/public): dashboard, landing
-  page, browser logic, service worker, and styles
-- [data/observer.json](/home/yellowcooln/mesh-health-check/data/observer.json):
-  persistent observer public-key profile map with `name`, `lat`, and `lon`
-- [data/session-results.json](/home/yellowcooln/mesh-health-check/data/session-results.json):
-  retained session result store for shareable links
-- [`.env.example`](/home/yellowcooln/mesh-health-check/.env.example): deployment
-  config template
-- [HOWTO.md](/home/yellowcooln/mesh-health-check/HOWTO.md): setup and operator
-  guide
-
-This repo is container-first. `docker compose up -d --build` is the intended
-runtime path.
-
-## Environment
-
-Copy [`.env.example`](/home/yellowcooln/mesh-health-check/.env.example) to
-[`.env`](/home/yellowcooln/mesh-health-check/.env) and fill in the values you
-actually need.
-
-Key groups:
-
-- App:
-  `PORT`, `APP_TITLE`, `APP_EYEBROW`, `APP_HEADLINE`, `APP_DESCRIPTION`,
-  `EXTERNAL_LINK_URL`, `EXTERNAL_LINK_LABEL`, `LOG_LEVEL`, `TRUST_PROXY`
-- MQTT:
-  `MQTT_HOST`, `MQTT_PORT`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_TOPIC`,
-  `MQTT_TRANSPORT`, `MQTT_WS_PATH`, `MQTT_TLS`, `DASH_BROKER_HOST`, optional
-  `MQTT_URL`
-- Channel:
-  `TEST_CHANNEL_NAME`, `TEST_CHANNEL_SECRET`, optional `TEST_CHANNEL_HASH`
-- Sessions:
-  `SESSION_TTL_SECONDS`, `RESULT_RETENTION_SECONDS`, `MAX_USES_PER_CODE`,
-  `SESSION_RATE_WINDOW_SECONDS`, `SESSION_RATE_MAX`
-- Observers:
-  `OBSERVERS_FILE`, `RESULTS_FILE`, `KNOWN_OBSERVERS`,
-  `OBSERVER_ACTIVE_WINDOW_SECONDS`, `OBSERVER_RETENTION_SECONDS`
-- Turnstile:
-  `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`,
-  `TURNSTILE_API_URL`, `TURNSTILE_COOKIE_NAME`,
-  `TURNSTILE_TOKEN_TTL_SECONDS`, `TURNSTILE_BOT_BYPASS`,
-  `TURNSTILE_BOT_ALLOWLIST`, `TURNSTILE_VERIFY_RATE_WINDOW_SECONDS`,
-  `TURNSTILE_VERIFY_RATE_MAX`
-
-Important behavior:
-
-- If `KNOWN_OBSERVERS` is set, new codes use that configured observer set by
-  default.
-- If `KNOWN_OBSERVERS` is blank, the default target falls back to observers
-  active in the configured time window.
-- Observers fall out of the dashboard directory and map if they have not been
-  heard from within `OBSERVER_RETENTION_SECONDS`.
-- Set `OBSERVER_RETENTION_SECONDS=0` to disable stale-observer pruning and
-  keep known observers visible regardless of age.
-- Users can override the default target in the browser for each new code.
-- `data/observer.json` is loaded at boot and updated when new observer names or
-  coordinates are learned from MQTT metadata.
-- `data/session-results.json` retains shareable result data for the configured
-  retention window and is pruned automatically after expiry.
-- The dashboard map only plots observers that have saved coordinates.
-- `DASH_BROKER_HOST` only changes the broker label shown in the dashboard. It
-  does not change the actual MQTT connection target.
-- Result links use `/share/:sessionId` and remain available until the retained
-  result expires.
-- supported browsers can install the site as a standalone app from the
-  dashboard.
-
-## Run It
+Clone the repo and run the local Compose build:
 
 ```bash
+git clone https://github.com/yellowcooln/meshcore-health-check.git
+cd meshcore-health-check
+cp .env.example .env
 docker compose up -d --build
 ```
 
 Default local URL: `http://localhost:3090`
 
-If Turnstile is enabled:
-- `/` serves the verification page
-- `/app` serves the dashboard after a successful challenge
+To run the published Docker image instead, use the production branch image
+`yellowcooln/meshcore-health-check:latest`, which is built from `main`, or
+`yellowcooln/meshcore-health-check:dev`, which is built from `dev`. See
+[HOWTO.md](HOWTO.md) for a full image-based Compose example.
 
-## Security Notes
+At minimum, configure MQTT and the test channel in `.env`:
 
-- Keep port `3090` private to your reverse proxy or internal network.
-- Session creation and Turnstile verification are rate-limited.
-- Leave `TRUST_PROXY=1` when running behind Nginx or Cloudflare.
-- The app only decodes the configured test channel and ignores all other
-  channel traffic on the same MQTT topic.
+- `MQTT_HOST`, `MQTT_PORT`, `MQTT_TRANSPORT`, `MQTT_TLS`
+- `MQTT_USERNAME`, `MQTT_PASSWORD` when required
+- `MQTT_TOPIC`
+- `TEST_CHANNEL_NAME`
+- `TEST_CHANNEL_SECRET` or `TEST_CHANNEL_HASH`
 
-## UI Notes
+For full setup steps, read [HOWTO.md](HOWTO.md). For every runtime variable,
+read [ENVIRONMENT.md](ENVIRONMENT.md).
 
-- The message hash in the active session card links directly to the packet
-  analyzer when a hash is available.
-- By default, the coverage map plots the current observer directory. Custom
-  deployments can set `data-map-observer-scope="expected"` on the page `<body>`
-  to plot only the observer set used for the active session score.
-- The current session card includes a `Share` button that copies a retained
-  `/share/:sessionId` link.
-- The coverage map defaults to dark tiles and can be toggled to light tiles in
-  the UI.
-- Browsers that support PWA installation will show an `Install App` button in
-  the dashboard.
-- The footer always links back to the project repository.
-- The optional hero link only appears when `EXTERNAL_LINK_URL` is configured.
+## Project Layout
 
-## Decoder Note
+- [server.js](server.js): Express API, MQTT ingest, MeshCore decoding, session
+  matching, observer persistence, Turnstile handling, and WebSocket snapshots
+- [public/](public): dashboard, share page, landing page, styles, and service
+  worker
+- [data/observer.json](data/observer.json): observer names and coordinates
+- [data/observer-activity.json](data/observer-activity.json): rolling observer
+  packet history used for dynamic defaults
+- [data/session-results.json](data/session-results.json): retained share-link
+  session results
+- [.env.example](.env.example): runtime config template
+- [ENVIRONMENT.md](ENVIRONMENT.md): full environment variable reference
+- [HOWTO.md](HOWTO.md): deployment and operator guide
+- [CHANGES.md](CHANGES.md): release changelog
 
-The app now uses `@michaelhart/meshcore-decoder` for runtime MeshCore packet
-decoding. The current upstream package already handles multibyte path-hop data,
-and this repo applies a small postinstall compatibility patch so the published
-CommonJS build still loads cleanly on Node 18.
+## Runtime Notes
+
+- The app only decodes the configured test channel.
+- Docker Compose is the supported runtime path.
+- Keep `data/` mounted if observer profiles, observer activity, and share links
+  must survive rebuilds.
+- Leave `KNOWN_OBSERVERS` blank to let the app auto-select the top recent
+  observers. Set it to full pubkeys for a fixed default target set.
+- Set `OBSERVER_RETENTION_SECONDS=0` to keep known observers visible regardless
+  of age.
+- Share links use retained server-side results and remain available until
+  `RESULT_RETENTION_SECONDS` expires.
+- `DASH_BROKER_HOST` changes only the broker label shown in the UI. It does not
+  change the actual MQTT connection.
+- `CORESCOPE_URL` changes the matched message-hash link to CoreScope
+  `#/packets/<hash>` routes.
+- `DISTANCE_UNIT=mi` or `DISTANCE_UNIT=km` controls packet distance labels.
+
+## Validation
+
+```bash
+npm run check
+npm test
+docker compose up -d --build
+curl -s http://localhost:3090/api/bootstrap
+```
+
+Run `npm run test:smoke` when UI or routing behavior changes.
+
+## Decoder
+
+The app uses `@michaelhart/meshcore-decoder` for runtime MeshCore packet
+decoding. A small postinstall compatibility patch keeps the published CommonJS
+build loading cleanly on Node 18.
 
 ## Star History
 

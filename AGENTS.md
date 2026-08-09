@@ -20,6 +20,7 @@
   `/share/:sessionId` links.
 - `README.md`: architecture and flow overview.
 - `HOWTO.md`: deployment and operator guide.
+- `ENVIRONMENT.md`: complete runtime environment variable reference.
 - `CHANGES.md`: versioned project change log.
 
 ## Build, Test, and Development Commands
@@ -74,6 +75,11 @@ but `npm test` and `npm run check` are valid for local CI-style verification.
 ## Commit & Pull Request Guidelines
 
 - Use short imperative commit messages, for example: `Add cookie auth flow`.
+- Every release must update `CHANGES.md` and any version references in
+  `package.json`, `package-lock.json`, and tests.
+- When env vars are added, removed, renamed, or behavior changes, update
+  `.env.example`, `ENVIRONMENT.md`, `HOWTO.md`, and `CHANGES.md` in the same
+  release.
 - PRs should include:
   - behavior summary
   - config changes

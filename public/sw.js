@@ -1,4 +1,4 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v2';
+const CACHE_NAME = 'mesh-health-check-pwa-v3';
 const CORE_ASSETS = [
   '/',
   '/app',
@@ -60,6 +60,10 @@ self.addEventListener('fetch', (event) => {
   }
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) {
+    return;
+  }
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/share/')) {
+    event.respondWith(fetch(new Request(event.request, { cache: 'no-store' })));
     return;
   }
   if (event.request.mode === 'navigate') {

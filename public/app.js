@@ -1,7 +1,7 @@
 const SESSION_STORAGE_KEY = 'mesh-health-check-session-id';
 const SESSION_HISTORY_STORAGE_KEY = 'mesh-health-check-session-history';
 const OBSERVER_ALLOWLIST_STORAGE_KEY = 'mesh-health-check-observer-allowlist';
-const MAP_THEME_STORAGE_KEY = 'mesh-health-check-map-theme';
+const UI_THEME_STORAGE_KEY = 'mesh-health-check-ui-theme';
 const ANALYZER_BASE_URL = 'https://analyzer.letsmesh.net/packets?packet_hash=';
 const SHARE_ROUTE_PREFIX = '/share/';
 let deferredInstallPrompt = null;
@@ -21,6 +21,8 @@ const ui = {
   healthLabel: document.querySelector('#health-label'),
   healthPercent: document.querySelector('#health-percent'),
   observedCount: document.querySelector('#observed-count'),
+  repeaterCount: document.querySelector('#repeater-count'),
+  longestPacketDistance: document.querySelector('#longest-packet-distance'),
   senderName: document.querySelector('#sender-name'),
   channelName: document.querySelector('#channel-name'),
   heroEyebrow: document.querySelector('#hero-eyebrow'),
@@ -39,7 +41,7 @@ const ui = {
   regionFilter: document.querySelector('#region-filter'),
   observerAllowlist: document.querySelector('#observer-allowlist'),
   observerAllowlistClear: document.querySelector('#observer-allowlist-clear'),
-  mapThemeToggle: document.querySelector('#map-theme-toggle'),
+  uiThemeToggle: document.querySelector('#ui-theme-toggle'),
   mapObserverNote: document.querySelector('#map-observer-note'),
   mapEmpty: document.querySelector('#map-empty'),
   observerMap: document.querySelector('#observer-map'),
@@ -53,12 +55,31 @@ const ui = {
   receiptsEmpty: document.querySelector('#receipts-empty'),
   receipts: document.querySelector('#receipts'),
   sessionHistory: document.querySelector('#session-history'),
+  networkWindow: document.querySelector('#network-window'),
+  networkState: document.querySelector('#network-state'),
+  observerDensity: document.querySelector('#observer-density'),
+  observerDensityLabel: document.querySelector('#observer-density-label'),
+  observerDensityDetail: document.querySelector('#observer-density-detail'),
+  observerSparkline: document.querySelector('#observer-sparkline'),
+  observerLoadSparkline: document.querySelector('#observer-load-sparkline'),
+  signalQuality: document.querySelector('#signal-quality'),
+  signalQualityLabel: document.querySelector('#signal-quality-label'),
+  signalSparkline: document.querySelector('#signal-sparkline'),
+  latencyScore: document.querySelector('#latency-score'),
+  latencyLabel: document.querySelector('#latency-label'),
+  latencySparkline: document.querySelector('#latency-sparkline'),
+  detailDrawer: document.querySelector('#detail-drawer'),
+  drawerScrim: document.querySelector('#drawer-scrim'),
+  drawerMeta: document.querySelector('#drawer-meta'),
+  drawerTitle: document.querySelector('#drawer-title'),
+  drawerBody: document.querySelector('#drawer-body'),
+  drawerClose: document.querySelector('#drawer-close'),
 };
 
 const pageMode = document.body?.dataset?.pageMode || 'app';
-const mapObserverScope = document.body?.dataset?.mapObserverScope === 'expected'
-  ? 'expected'
-  : 'directory';
+const mapObserverScope = document.body?.dataset?.mapObserverScope === 'directory'
+  ? 'directory'
+  : 'expected';
 
 localStorage.removeItem(SESSION_STORAGE_KEY);
 localStorage.removeItem(SESSION_HISTORY_STORAGE_KEY);
@@ -70,19 +91,25 @@ const state = {
   sharedSessionMissing: false,
   trackedSessionIds: loadTrackedSessionIds(),
   selectedObserverKeys: loadSelectedObserverKeys(),
+  selectedRegionGroup: null,
   selectedRegion: null,
-  mapTheme: loadMapTheme(),
+  uiTheme: loadUiTheme(),
   sessions: new Map(),
   socket: null,
   socketRetryTimer: 0,
   sessionRetargetTimer: 0,
   refreshInFlight: false,
+  observerAllowlistSignature: '',
   map: {
     instance: null,
     layer: null,
     layerTheme: '',
     markers: new Map(),
     boundsKey: '',
+  },
+  drawer: {
+    kind: '',
+    key: '',
   },
 };
 
@@ -126,17 +153,43 @@ function saveSelectedObserverKeys() {
   );
 }
 
-function loadMapTheme() {
-  const stored = localStorage.getItem(MAP_THEME_STORAGE_KEY);
+function loadUiTheme() {
+  const stored = localStorage.getItem(UI_THEME_STORAGE_KEY);
   return stored === 'light' ? 'light' : 'dark';
 }
 
-function saveMapTheme() {
-  localStorage.setItem(MAP_THEME_STORAGE_KEY, state.mapTheme);
+function saveUiTheme() {
+  localStorage.setItem(UI_THEME_STORAGE_KEY, state.uiTheme);
+}
+
+function applyUiTheme() {
+  const activeTheme = state.uiTheme === 'dark' ? 'dark' : 'light';
+  document.body.dataset.uiTheme = activeTheme;
+  document.documentElement.style.colorScheme = activeTheme;
+  if (ui.uiThemeToggle) {
+    ui.uiThemeToggle.textContent = activeTheme === 'dark' ? 'Light Mode' : 'Dark Mode';
+  }
+  const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+  if (metaThemeColor) {
+    metaThemeColor.setAttribute('content', activeTheme === 'dark' ? '#07111d' : '#e9f2ff');
+  }
 }
 
 function dedupe(items) {
   return [...new Set(items.filter(Boolean))];
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
 }
 
 function sharedSessionIdFromLocation() {
@@ -186,15 +239,24 @@ function shortObserverKey(key) {
   return `${value.slice(0, 6)}...${value.slice(-6)}`;
 }
 
+function observerHashPrefix(key) {
+  const value = String(key || '').trim().toUpperCase();
+  const byteSize = Math.max(1, Math.min(3, Number(state.snapshot?.observerStats?.hashDisplayBytes || 1)));
+  const displayLength = byteSize * 2;
+  return value.slice(0, displayLength) || '--';
+}
+
 function fallbackObserverRecord(key) {
   return {
     key,
-    hash: String(key || '').trim().toUpperCase().slice(0, 2) || '--',
+    hash: observerHashPrefix(key),
     label: shortObserverKey(key),
     name: null,
     lat: null,
     lon: null,
     hasLocation: false,
+    region: null,
+    regionGroup: null,
     shortKey: shortObserverKey(key),
     packetCount: 0,
     firstSeenAt: 0,
@@ -214,6 +276,18 @@ function configuredDefaultObservers() {
   return configuredDefaultObserverKeys().map((key) => fallbackObserverRecord(key));
 }
 
+function observerDisplayLabel(observer) {
+  const name = String(observer?.name || '').trim();
+  if (name) {
+    return name;
+  }
+  const label = String(observer?.label || '').trim();
+  if (label) {
+    return label;
+  }
+  return shortObserverKey(observer?.key);
+}
+
 function selectableObservers() {
   const merged = new Map();
   for (const observer of configuredDefaultObservers()) {
@@ -227,7 +301,11 @@ function selectableObservers() {
       isDefaultTarget: Boolean(existing.isDefaultTarget),
     });
   }
-  return [...merged.values()];
+  return [...merged.values()].map((observer) => ({
+    ...observer,
+    label: observerDisplayLabel(observer),
+    shortKey: observer.shortKey || shortObserverKey(observer.key),
+  }));
 }
 
 function customSelectedObserverKeys() {
@@ -254,6 +332,10 @@ function defaultObserverTargetSummary() {
   const count = defaultObserverKeys().length;
   if (source === 'configured') {
     return `Default: ${count} observer${count === 1 ? '' : 's'}.`;
+  }
+  if (source === 'top-window') {
+    const days = Math.max(1, Number(state.snapshot?.observerStats?.topWindowDays || 7));
+    return `Default: top ${count} observer${count === 1 ? '' : 's'} over ${days} day${days === 1 ? '' : 's'}.`;
   }
   return `Default: ${count} active observer${count === 1 ? '' : 's'}.`;
 }
@@ -320,6 +402,9 @@ function sessionObserverSourceLabel(session) {
   }
   if (session.expectedObserverSource === 'configured') {
     return 'Default set';
+  }
+  if (session.expectedObserverSource === 'top-window') {
+    return 'Top observers';
   }
   if (session.expectedObserverSource === 'active-window') {
     return 'Active set';
@@ -403,6 +488,213 @@ function formatElapsed(ms) {
   return `${minutes} min ${seconds}s`;
 }
 
+function formatWindow(seconds) {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value >= 3600) {
+    const hours = value / 3600;
+    return Number.isInteger(hours) ? `${hours}h window` : `${hours.toFixed(1)}h window`;
+  }
+  if (value >= 60) {
+    const minutes = value / 60;
+    return Number.isInteger(minutes) ? `${minutes}m window` : `${minutes.toFixed(1)}m window`;
+  }
+  return `${value}s window`;
+}
+
+function renderSparkline(element, points, tone = 'neutral') {
+  if (!element) {
+    return;
+  }
+  const source = Array.isArray(points) && points.length > 0
+    ? points
+    : [10, 12, 11, 14, 13, 12, 15, 12];
+  const normalized = source.map((point) => clamp(point, 8, 100));
+  const signature = `${tone}|${normalized.join(',')}`;
+  if (element.dataset.sparklineSignature === signature) {
+    return;
+  }
+
+  element.innerHTML = '';
+  element.dataset.tone = tone;
+  element.dataset.sparklineSignature = signature;
+  for (const [index, point] of normalized.entries()) {
+    const bar = document.createElement('span');
+    bar.className = 'sparkline-bar';
+    bar.style.height = `${point}%`;
+    bar.style.animationDelay = `${index * 40}ms`;
+    element.appendChild(bar);
+  }
+}
+
+function scoreTone(score) {
+  if (!Number.isFinite(score)) {
+    return 'neutral';
+  }
+  if (score >= 72) {
+    return 'good';
+  }
+  if (score >= 45) {
+    return 'warning';
+  }
+  return 'critical';
+}
+
+function scoreLabel(score) {
+  if (!Number.isFinite(score)) {
+    return 'Awaiting telemetry';
+  }
+  if (score >= 72) {
+    return 'Nominal signal window';
+  }
+  if (score >= 45) {
+    return 'Degraded signal window';
+  }
+  return 'Critical signal window';
+}
+
+function receiptSignalScore(receipt) {
+  const components = [];
+  if (Number.isFinite(receipt?.rssi)) {
+    components.push(clamp(((Number(receipt.rssi) + 120) / 75) * 100, 0, 100));
+  }
+  if (Number.isFinite(receipt?.snr)) {
+    components.push(clamp(((Number(receipt.snr) + 20) / 40) * 100, 0, 100));
+  }
+  if (components.length === 0) {
+    return null;
+  }
+  return Math.round(components.reduce((sum, value) => sum + value, 0) / components.length);
+}
+
+function transportSummary(snapshot) {
+  const activeCount = Number(snapshot?.observerStats?.activeCount || 0);
+  const windowSeconds = Number(snapshot?.observerStats?.windowSeconds || 0);
+  const directory = Array.isArray(snapshot?.observerDirectory) ? snapshot.observerDirectory : [];
+  const configuredCount = Math.max(directory.length, Number(snapshot?.observerStats?.configuredCount || 0));
+  const maxPacketCount = Math.max(
+    1,
+    ...directory.map((observer) => Number(observer?.packetCount || 0)),
+  );
+  const activityBars = directory.slice(0, 8).map((observer) => {
+    const packetCount = Number(observer?.packetCount || 0);
+    return clamp((packetCount / maxPacketCount) * 100, 10, 100);
+  });
+  const stateLabel = snapshot?.mqtt?.connected ? 'Live' : (isSharePage() ? 'Shared' : 'Offline');
+  return {
+    stateLabel,
+    tone: directory.length > 0
+      ? (snapshot?.mqtt?.connected ? 'good' : (isSharePage() ? 'warning' : 'warning'))
+      : 'neutral',
+    activityBars,
+    density: `${activeCount} / ${configuredCount || 0}`,
+    summary: directory.length > 0
+      ? `${activeCount} active nodes · ${formatWindow(windowSeconds)}`
+      : 'Awaiting observer directory.',
+    detail: directory.length > 0
+      ? `${directory.length} known observer${directory.length === 1 ? '' : 's'} on file.`
+      : 'No observer telemetry yet.',
+  };
+}
+
+function signalSummary(session) {
+  const receipts = Array.isArray(session?.receipts) ? [...session.receipts] : [];
+  const points = receipts
+    .map((receipt) => receiptSignalScore(receipt))
+    .filter((value) => Number.isFinite(value));
+  if (points.length === 0) {
+    return {
+      value: '--',
+      label: 'Awaiting telemetry.',
+      tone: 'neutral',
+      points: [],
+    };
+  }
+  const average = Math.round(points.reduce((sum, value) => sum + value, 0) / points.length);
+  return {
+    value: `${average}%`,
+    label: scoreLabel(average),
+    tone: scoreTone(average),
+    points,
+  };
+}
+
+function latencySummary(session) {
+  const receipts = Array.isArray(session?.receipts)
+    ? [...session.receipts]
+        .filter((receipt) => receipt?.firstSeenAt)
+        .sort((left, right) => left.firstSeenAt - right.firstSeenAt)
+    : [];
+  if (receipts.length === 0) {
+    return {
+      value: '--',
+      label: 'Awaiting receipt spread.',
+      tone: 'neutral',
+      points: [],
+    };
+  }
+  const firstSeenAt = receipts[0].firstSeenAt;
+  const lastSeenAt = receipts[receipts.length - 1].firstSeenAt;
+  const spread = Math.max(0, lastSeenAt - firstSeenAt);
+  const points = receipts.map((receipt) => {
+    if (spread <= 0) {
+      return 100;
+    }
+    return clamp(((receipt.firstSeenAt - firstSeenAt) / spread) * 100, 10, 100);
+  });
+  return {
+    value: spread > 0 ? `+${formatElapsed(spread)}` : '0 ms',
+    label: spread > 0
+      ? `${receipts.length} observers across ${formatElapsed(spread)}`
+      : `${receipts.length} observer${receipts.length === 1 ? '' : 's'} at the same moment`,
+    tone: spread > 45000 ? 'critical' : spread > 12000 ? 'warning' : 'good',
+    points,
+  };
+}
+
+function renderGlanceMetrics(session) {
+  const snapshot = state.snapshot;
+  if (!snapshot) {
+    return;
+  }
+
+  const transport = transportSummary(snapshot);
+  const signal = signalSummary(session);
+  const latency = latencySummary(session);
+
+  if (ui.networkWindow) {
+    ui.networkWindow.textContent = transport.summary;
+  }
+  if (ui.networkState) {
+    ui.networkState.textContent = transport.stateLabel;
+  }
+  if (ui.observerDensity) {
+    ui.observerDensity.textContent = transport.density;
+  }
+  if (ui.observerDensityLabel) {
+    ui.observerDensityLabel.textContent = transport.summary;
+  }
+  if (ui.observerDensityDetail) {
+    ui.observerDensityDetail.textContent = transport.detail;
+  }
+  if (ui.signalQuality) {
+    ui.signalQuality.textContent = signal.value;
+  }
+  if (ui.signalQualityLabel) {
+    ui.signalQualityLabel.textContent = signal.label;
+  }
+  if (ui.latencyScore) {
+    ui.latencyScore.textContent = latency.value;
+  }
+  if (ui.latencyLabel) {
+    ui.latencyLabel.textContent = latency.label;
+  }
+
+  renderSparkline(ui.observerSparkline, transport.activityBars, transport.tone);
+  renderSparkline(ui.observerLoadSparkline, transport.activityBars.slice().reverse(), transport.tone);
+  renderSparkline(ui.signalSparkline, signal.points, signal.tone);
+  renderSparkline(ui.latencySparkline, latency.points, latency.tone);
+}
+
 function retentionNote() {
   const seconds = Number(state.snapshot?.results?.retentionSeconds || 0);
   if (!seconds) {
@@ -413,6 +705,41 @@ function retentionNote() {
     return `Shared links are kept for ${days} day${days === 1 ? '' : 's'}.`;
   }
   return `Shared links are kept for ${formatElapsed(seconds * 1000)}.`;
+}
+
+function cleanConfigValue(value) {
+  const text = String(value || '').trim();
+  if (!text || /^\{\{.*\}\}$/.test(text)) {
+    return '';
+  }
+  return text;
+}
+
+function normalizeCoreScopeBaseUrl(value) {
+  const raw = cleanConfigValue(value);
+  if (!raw) {
+    return '';
+  }
+  const base = raw.replace(/#\/?$/, '').replace(/\/+$/, '');
+  return /^https?:\/\//i.test(base) ? base : '';
+}
+
+function buildCoreScopePacketLink(hash) {
+  const base = normalizeCoreScopeBaseUrl(state.snapshot?.site?.coreScopeUrl);
+  const value = String(hash || '').trim();
+  if (!base || !value) {
+    return '';
+  }
+  const normalizedValue = /^[0-9a-f]+$/i.test(value) ? value.toLowerCase() : value;
+  return `${base}/#/packets/${encodeURIComponent(normalizedValue)}`;
+}
+
+function packetHashLink(hash) {
+  const coreScopeUrl = buildCoreScopePacketLink(hash);
+  if (coreScopeUrl) {
+    return coreScopeUrl;
+  }
+  return `${ANALYZER_BASE_URL}${encodeURIComponent(hash)}`;
 }
 
 function setSessionHash(hash) {
@@ -427,7 +754,7 @@ function setSessionHash(hash) {
   }
 
   ui.sessionHash.textContent = value;
-  ui.sessionHash.href = `${ANALYZER_BASE_URL}${encodeURIComponent(value)}`;
+  ui.sessionHash.href = packetHashLink(value);
   ui.sessionHash.classList.remove('pending');
   ui.sessionHash.setAttribute('target', '_blank');
   ui.sessionHash.setAttribute('rel', 'noopener noreferrer');
@@ -532,7 +859,6 @@ async function copySessionShareLink() {
 
   const shareData = {
     title: document.title,
-    text: `Observer coverage for ${session.code}`,
     url: shareUrl,
   };
 
@@ -628,10 +954,10 @@ function renderExpectedObservers(session) {
     item.className = `observer-pill ${observer.seen ? 'seen' : 'waiting'}`;
     item.innerHTML = `
       <div class="observer-main">
-        <strong class="observer-label">${observer.label}</strong>
-        <div class="small-note observer-hash">${observer.hash || ''}</div>
+        <strong class="observer-label">${escapeHtml(observer.label)}</strong>
+        <div class="small-note observer-hash">${escapeHtml(observer.hash || '')}</div>
       </div>
-      <span class="status">${observer.seen ? 'Seen' : 'Waiting'}</span>
+      <span class="status">${observer.seen ? 'Seen' : 'Not Seen'}</span>
     `;
     ui.expectedObservers.appendChild(item);
   }
@@ -639,8 +965,9 @@ function renderExpectedObservers(session) {
 
 function renderRegionFilter() {
   if (!ui.regionFilter) return;
-  const regions = state.snapshot?.availableRegions;
-  if (!Array.isArray(regions) || regions.length === 0) {
+  const { hasGroups, regions } = regionFilterOptions();
+
+  if (regions.length === 0 || regions.every((entry) => entry.regions.length === 0)) {
     ui.regionFilter.classList.add('hidden');
     ui.regionFilter.innerHTML = '';
     return;
@@ -648,52 +975,191 @@ function renderRegionFilter() {
   ui.regionFilter.classList.remove('hidden');
   ui.regionFilter.innerHTML = '';
 
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  allBtn.className = `region-btn${state.selectedRegion === null ? ' active' : ''}`;
-  allBtn.textContent = 'All';
-  allBtn.addEventListener('click', () => {
-    state.selectedRegion = null;
-    applyRegionSelection();
-  });
-  ui.regionFilter.appendChild(allBtn);
+  const groupRow = document.createElement('div');
+  groupRow.className = 'region-filter__row';
 
-  for (const name of regions) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = `region-btn${state.selectedRegion === name ? ' active' : ''}`;
-    btn.textContent = name;
-    btn.addEventListener('click', () => {
-      state.selectedRegion = name;
+  const locatedObserverCount = regions.reduce((sum, entry) => sum + (entry.count || 0), 0);
+  groupRow.appendChild(createRegionButton({
+    className: 'region-btn--all',
+    active: state.selectedRegionGroup === null && state.selectedRegion === null,
+    label: hasGroups ? 'All regions' : 'All',
+    count: locatedObserverCount,
+    onClick: () => {
+      state.selectedRegionGroup = null;
+      state.selectedRegion = null;
       applyRegionSelection();
-    });
-    ui.regionFilter.appendChild(btn);
+    },
+  }));
+
+  if (hasGroups) {
+    for (const entry of regions.filter((item) => item.group)) {
+      groupRow.appendChild(createRegionButton({
+        className: 'region-btn--group',
+        active: state.selectedRegionGroup === entry.group && state.selectedRegion === null,
+        label: entry.group,
+        count: entry.count,
+        onClick: () => {
+          state.selectedRegionGroup = entry.group;
+          state.selectedRegion = null;
+          applyRegionSelection();
+        },
+      }));
+    }
+  }
+  ui.regionFilter.appendChild(groupRow);
+
+  const selectedGroup = state.selectedRegionGroup
+    ? regions.find((entry) => entry.group === state.selectedRegionGroup)
+    : null;
+  const subregionSource = hasGroups
+    ? selectedGroup?.regions || []
+    : regions.flatMap((entry) => entry.regions);
+
+  if (subregionSource.length > 0) {
+    const subregionRow = document.createElement('div');
+    subregionRow.className = 'region-filter__row region-filter__row--subregions';
+
+    if (selectedGroup) {
+      subregionRow.appendChild(createRegionButton({
+        className: 'region-btn--child',
+        active: state.selectedRegion === null,
+        label: `All ${selectedGroup.group}`,
+        count: selectedGroup.count,
+        onClick: () => {
+          state.selectedRegion = null;
+          applyRegionSelection();
+        },
+      }));
+    }
+
+    for (const region of subregionSource) {
+      subregionRow.appendChild(createRegionButton({
+        className: 'region-btn--child',
+        active: state.selectedRegion === region.name,
+        label: region.name,
+        count: region.count,
+        onClick: () => {
+          state.selectedRegion = region.name;
+          if (!state.selectedRegionGroup && hasGroups) {
+            const parent = regions.find((entry) => entry.regions.some((item) => item.name === region.name));
+            state.selectedRegionGroup = parent?.group || null;
+          }
+          applyRegionSelection();
+        },
+      }));
+    }
+    ui.regionFilter.appendChild(subregionRow);
+  }
+}
+
+function regionFilterOptions(snapshot = state.snapshot) {
+  const hierarchy = Array.isArray(snapshot?.regionHierarchy)
+    ? snapshot.regionHierarchy.filter((entry) => Array.isArray(entry.regions) && entry.regions.length > 0)
+    : [];
+  const flatRegions = Array.isArray(snapshot?.availableRegions)
+    ? snapshot.availableRegions.map((name) => ({ name, count: 0 }))
+    : [];
+  const regions = hierarchy.length > 0
+    ? hierarchy
+    : [{ group: '', count: flatRegions.length, regions: flatRegions }];
+  const namedGroupCount = regions.filter((entry) => entry.group).length;
+  const hasUngroupedRegions = regions.some((entry) => !entry.group && entry.regions.length > 0);
+  const hasGroups = namedGroupCount > 1 || (namedGroupCount > 0 && hasUngroupedRegions);
+  return { hasGroups, regions };
+}
+
+function createRegionButton({ className, active, label, count, onClick }) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = `region-btn ${className}${active ? ' active' : ''}`;
+
+  const labelEl = document.createElement('span');
+  labelEl.textContent = label;
+  btn.appendChild(labelEl);
+
+  if (Number.isFinite(count) && count > 0) {
+    const countEl = document.createElement('span');
+    countEl.className = 'region-btn__count';
+    countEl.textContent = String(count);
+    btn.appendChild(countEl);
+  }
+
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+function reconcileRegionSelection(snapshot) {
+  const { hasGroups, regions } = regionFilterOptions(snapshot);
+  if (!hasGroups && state.selectedRegionGroup !== null) {
+    state.selectedRegionGroup = null;
+  }
+  if (state.selectedRegionGroup !== null) {
+    const group = regions.find((entry) => entry.group === state.selectedRegionGroup);
+    if (!group) {
+      state.selectedRegionGroup = null;
+      state.selectedRegion = null;
+      state.selectedObserverKeys = [];
+      saveSelectedObserverKeys();
+      return;
+    }
+    if (state.selectedRegion !== null && !group.regions.some((region) => region.name === state.selectedRegion)) {
+      state.selectedRegion = null;
+    }
+    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
+    saveSelectedObserverKeys();
+    return;
+  }
+
+  if (state.selectedRegion !== null) {
+    const regionExists = regions.some((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
+    if (!regionExists) {
+      state.selectedRegion = null;
+      state.selectedObserverKeys = [];
+      saveSelectedObserverKeys();
+      return;
+    }
+    if (hasGroups) {
+      const parent = regions.find((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
+      state.selectedRegionGroup = parent?.group || null;
+    }
+    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
+    saveSelectedObserverKeys();
   }
 }
 
 function applyRegionSelection() {
-  if (state.selectedRegion === null) {
+  if (state.selectedRegionGroup === null && state.selectedRegion === null) {
     state.selectedObserverKeys = [];
   } else {
-    const directory = state.snapshot?.observerDirectory ?? [];
-    state.selectedObserverKeys = directory
-      .filter((o) => o.region === state.selectedRegion)
-      .map((o) => o.key);
+    state.selectedObserverKeys = observerKeysForRegionSelection(state.snapshot);
   }
   saveSelectedObserverKeys();
   render();
   scheduleSessionRetarget();
 }
 
+function observerKeysForRegionSelection(snapshot = state.snapshot) {
+  const directory = Array.isArray(snapshot?.observerDirectory) ? snapshot.observerDirectory : [];
+  return directory
+    .filter((observer) => {
+      if (state.selectedRegion) {
+        return observer.region === state.selectedRegion
+          && (!state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup);
+      }
+      return observer.regionGroup === state.selectedRegionGroup;
+    })
+    .map((observer) => observer.key);
+}
+
 function renderObserverAllowlist() {
   renderRegionFilter();
   const directory = selectableObservers();
   const selected = new Set(effectiveObserverKeysForCreate());
-  ui.observerAllowlist.innerHTML = '';
   ui.observerAllowlistClear.disabled = usingDefaultObserverSet();
 
   if (directory.length === 0) {
     ui.observerAllowlistNote.textContent = 'No observers available to select yet.';
+    state.observerAllowlistSignature = '__empty__';
     ui.observerAllowlist.innerHTML =
       '<div class="empty-state compact">Observer choices appear as metadata and packets arrive.</div>';
     return;
@@ -704,29 +1170,49 @@ function renderObserverAllowlist() {
     ? defaultObserverTargetSummary()
     : `Custom: ${selectedCount} observer${selectedCount === 1 ? '' : 's'}.`;
 
-  for (const observer of directory) {
+  const rows = directory.map((observer) => ({
+    key: observer.key,
+    label: observerDisplayLabel(observer),
+    hash: observer.hash || '--',
+    detail: [
+      observer.isDefaultTarget ? 'default target' : 'available',
+      observer.isRetained === false ? 'not recently heard' : 'known observer',
+      observer.hasLocation ? 'mapped' : 'no map',
+    ].join(' · '),
+    checked: selected.has(observer.key),
+    stale: observer.isRetained === false,
+  }));
+  const signature = JSON.stringify(
+    rows.map((row) => [row.key, row.label, row.hash, row.detail, row.checked, row.stale]),
+  );
+  if (state.observerAllowlistSignature === signature) {
+    return;
+  }
+
+  const previousScrollTop = ui.observerAllowlist.scrollTop;
+  ui.observerAllowlist.innerHTML = '';
+
+  for (const row of rows) {
     const item = document.createElement('label');
-    item.className = `observer-option ${observer.isActive ? 'active' : 'inactive'}`;
-    const status = observer.isActive
-      ? 'active'
-      : observer.isRetained === false
-        ? 'not recently heard'
-        : 'idle';
+    item.className = `observer-option ${row.stale ? 'stale' : 'ready'} ${row.checked ? 'selected' : ''}`;
     item.innerHTML = `
-      <input type="checkbox" value="${observer.key}" ${selected.has(observer.key) ? 'checked' : ''}>
+      <input type="checkbox" value="${row.key}" ${row.checked ? 'checked' : ''}>
       <span class="observer-option-copy">
-        <strong>${observer.label}</strong>
-        <span>${observer.hash || '--'} · ${observer.shortKey} · ${status}</span>
+        <strong>${escapeHtml(row.label)}</strong>
+        <span>${escapeHtml(row.hash)}</span>
+        <span>${escapeHtml(row.detail)}</span>
       </span>
     `;
     const checkbox = item.querySelector('input');
     checkbox.addEventListener('change', () => {
       const next = new Set(effectiveObserverKeysForCreate());
       if (checkbox.checked) {
-        next.add(observer.key);
+        next.add(row.key);
       } else {
-        next.delete(observer.key);
+        next.delete(row.key);
       }
+      state.selectedRegionGroup = null;
+      state.selectedRegion = null;
       state.selectedObserverKeys = [...next];
       saveSelectedObserverKeys();
       render();
@@ -734,6 +1220,9 @@ function renderObserverAllowlist() {
     });
     ui.observerAllowlist.appendChild(item);
   }
+
+  ui.observerAllowlist.scrollTop = previousScrollTop;
+  state.observerAllowlistSignature = signature;
 }
 
 function applySiteBranding(snapshot) {
@@ -820,9 +1309,20 @@ function updateTransportStatus(snapshot) {
 
 function mapKnownObservers(session) {
   const directory = observerDirectory();
-  let source = directory;
+  const mergedDirectory = new Map();
+  for (const observer of configuredDefaultObservers()) {
+    mergedDirectory.set(observer.key, observer);
+  }
+  for (const observer of directory) {
+    const existing = mergedDirectory.get(observer.key) || {};
+    mergedDirectory.set(observer.key, {
+      ...existing,
+      ...observer,
+    });
+  }
+  let source = [...mergedDirectory.values()];
   if (mapObserverScope === 'expected') {
-    const directoryByKey = new Map(directory.map((observer) => [observer.key, observer]));
+    const directoryByKey = new Map(source.map((observer) => [observer.key, observer]));
     const expected = Array.isArray(session?.expectedObservers)
       ? session.expectedObservers.filter((observer) => observer?.key)
       : [];
@@ -843,7 +1343,17 @@ function mapKnownObservers(session) {
     Array.isArray(session?.receipts) ? session.receipts.map((receipt) => receipt.observerKey) : [],
   );
   return source
-    .filter((observer) => observer.lat != null && observer.lon != null)
+    .filter((observer) => {
+      const lat = Number(observer.lat);
+      const lon = Number(observer.lon);
+      return observer.lat != null
+        && observer.lon != null
+        && Number.isFinite(lat)
+        && Number.isFinite(lon)
+        && Math.abs(lat) <= 90
+        && Math.abs(lon) <= 180
+        && !(lat === 0 && lon === 0);
+    })
     .map((observer) => ({
       ...observer,
       seen: Boolean(observer.seen) || seenKeys.has(observer.key),
@@ -858,6 +1368,7 @@ function ensureObserverMap() {
     zoomControl: true,
     attributionControl: true,
   });
+  state.map.instance.setView([20, 0], 2);
   return state.map.instance;
 }
 
@@ -865,7 +1376,7 @@ function currentTileLayer() {
   if (!window.L) {
     return null;
   }
-  if (state.mapTheme === 'light') {
+  if (state.uiTheme === 'light') {
     return window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors',
@@ -891,24 +1402,22 @@ function renderObserverMap(session) {
   const locatedObservers = mapKnownObservers(session);
   const mapInstance = ensureObserverMap();
 
-  ui.mapThemeToggle.textContent = state.mapTheme === 'dark' ? 'Light Map' : 'Dark Map';
   ui.mapObserverNote.textContent = locatedObservers.length > 0
     ? `${locatedObservers.filter((observer) => observer.seen).length}/${locatedObservers.length} mapped observers reached.`
-    : 'Waiting for observer coordinates.';
+    : 'No observer coordinates yet. The map stays live and will populate as coordinates arrive.';
   ui.mapEmpty.classList.toggle('hidden', locatedObservers.length > 0);
-  ui.observerMap.classList.toggle('hidden', locatedObservers.length === 0);
 
   if (!mapInstance || !window.L) {
     return;
   }
 
-  if (!state.map.layer || state.map.layerTheme !== state.mapTheme) {
+  if (!state.map.layer || state.map.layerTheme !== state.uiTheme) {
     const nextLayer = currentTileLayer();
     if (state.map.layer) {
       mapInstance.removeLayer(state.map.layer);
     }
     state.map.layer = nextLayer;
-    state.map.layerTheme = state.mapTheme;
+    state.map.layerTheme = state.uiTheme;
     if (nextLayer) {
       nextLayer.addTo(mapInstance);
     }
@@ -935,9 +1444,9 @@ function renderObserverMap(session) {
       marker.setIcon(markerIcon(observer));
     }
     marker.bindPopup(`
-      <strong>${observer.label}</strong><br>
+      <strong>${escapeHtml(observer.label)}</strong><br>
       ${observer.seen ? 'Seen by this check' : 'Not seen by this check'}<br>
-      ${observer.hash || '--'} · ${observer.shortKey}
+      ${escapeHtml(observer.hash || '--')} · ${escapeHtml(observer.shortKey)}
     `);
   }
 
@@ -945,6 +1454,9 @@ function renderObserverMap(session) {
   if (bounds.length > 0 && boundsKey !== state.map.boundsKey) {
     mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
     state.map.boundsKey = boundsKey;
+  } else if (bounds.length === 0 && state.map.boundsKey !== '__empty__') {
+    mapInstance.setView([20, 0], 2);
+    state.map.boundsKey = '__empty__';
   }
   window.setTimeout(() => {
     mapInstance.invalidateSize();
@@ -959,10 +1471,41 @@ function renderReceipts(session) {
   for (const receipt of receipts) {
     const card = document.createElement('article');
     card.className = 'receipt-card';
+    card.dataset.observerKey = receipt.observerKey;
+    const signal = receiptSignalScore(receipt);
+    const signalTone = scoreTone(signal);
+    const pathMarkup = receipt.path.length > 0
+      ? receipt.path.map((hop) => `<span>${escapeHtml(hop)}</span>`).join('')
+      : '<span>No path data</span>';
+    const distanceText = String(receipt.displayDistanceText || receipt.pathDistanceText || '').trim();
+    const distanceSource = String(receipt.displayDistanceSource || '').trim();
+    const distanceLabel = String(receipt.displayDistanceLabel || '').trim();
+    const distanceSegments = Array.isArray(receipt.pathDistanceSegments)
+      ? receipt.pathDistanceSegments
+      : [];
+    const distanceMarkup = distanceText
+      ? `
+        <div class="receipt-distance">
+          <strong>${distanceSource === 'observer-span' ? 'Observer span' : 'Estimated path'} ${escapeHtml(distanceText)}</strong>
+          ${distanceSource === 'observer-span'
+            ? `<span>${escapeHtml(distanceLabel || 'Estimated from receipt observer coordinates.')}</span>`
+            : distanceSegments.length > 0
+            ? `<span>${escapeHtml(distanceSegments.map((segment) =>
+              `${segment.fromLabel} to ${segment.toLabel}: ${segment.distanceText}${
+                segment.estimated
+                  ? ` estimated over ${segment.skippedHopCount} unknown hop${segment.skippedHopCount === 1 ? '' : 's'}`
+                  : ''
+              }`
+            ).join(' · '))}</span>`
+            : '<span>Distance estimated from known observer coordinates.</span>'}
+        </div>
+      `
+      : '';
     const metrics = [
       receipt.rssi != null ? `RSSI ${receipt.rssi}` : '',
       receipt.snr != null ? `SNR ${receipt.snr}` : '',
       receipt.duration != null ? `${receipt.duration} ms` : '',
+      distanceText ? `${distanceSource === 'observer-span' ? 'Span' : 'Path'} ${distanceText}` : '',
     ]
       .filter(Boolean)
       .join(' · ');
@@ -970,15 +1513,32 @@ function renderReceipts(session) {
     card.innerHTML = `
       <div class="receipt-head">
         <div>
-          <h3 class="receipt-title">${receipt.observerLabel}</h3>
-          <div class="receipt-hash">${receipt.observerHash || ''} · ${receipt.observerShortKey}</div>
+          <h3 class="receipt-title">${escapeHtml(receipt.observerLabel)}</h3>
+          <div class="receipt-hash">${escapeHtml(receipt.observerHash || '')} · ${escapeHtml(receipt.observerShortKey)}</div>
         </div>
         <div class="small-note">${formatTime(receipt.firstSeenAt)}</div>
       </div>
       <p class="receipt-meta">
         Seen ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
-      <div class="receipt-path">${receipt.path.length > 0 ? receipt.path.join(' → ') : 'No path data'}</div>
+      <div class="receipt-meter-grid">
+        <div class="receipt-meter">
+          <span>Signal</span>
+          <div class="meter-track ${signalTone}">
+            <span style="width: ${Number.isFinite(signal) ? signal : 12}%;"></span>
+          </div>
+          <strong>${Number.isFinite(signal) ? `${signal}%` : '--'}</strong>
+        </div>
+        <div class="receipt-meter">
+          <span>Latency</span>
+          <div class="meter-track ${receipt.duration != null && receipt.duration > 1500 ? 'warning' : 'good'}">
+            <span style="width: ${receipt.duration != null ? clamp((Number(receipt.duration) / 3000) * 100, 12, 100) : 20}%;"></span>
+          </div>
+          <strong>${receipt.duration != null ? `${receipt.duration} ms` : 'n/a'}</strong>
+        </div>
+      </div>
+      <div class="receipt-path">${pathMarkup}</div>
+      ${distanceMarkup}
     `;
     ui.receipts.appendChild(card);
   }
@@ -1015,16 +1575,17 @@ function renderReceiptTimeline(session) {
   for (const receipt of receipts) {
     const delta = Math.max(0, receipt.firstSeenAt - firstSeenAt);
     const position = spread > 0 ? (delta / spread) * 100 : 0;
+    const clampedDotPosition = Math.min(99, Math.max(1, position));
     const row = document.createElement('article');
     row.className = 'timeline-row';
     row.innerHTML = `
       <div class="timeline-copy">
-        <strong>${receipt.observerLabel}</strong>
+        <strong>${escapeHtml(receipt.observerLabel)}</strong>
         <span>${delta === 0 ? `First receipt · ${formatTime(receipt.firstSeenAt)}` : `+${formatElapsed(delta)} · ${formatTime(receipt.firstSeenAt)}`}</span>
       </div>
       <div class="timeline-track">
         <span class="timeline-fill" style="width: ${position}%;"></span>
-        <span class="timeline-dot" style="left: ${position}%;"></span>
+        <span class="timeline-dot" style="left: ${clampedDotPosition}%;"></span>
       </div>
     `;
     ui.receiptTimeline.appendChild(row);
@@ -1041,10 +1602,11 @@ function renderHistory(sessions) {
   for (const session of sessions) {
     const item = document.createElement('article');
     item.className = 'history-item';
+    item.dataset.sessionId = session.id;
     item.innerHTML = `
       <div>
-        <div class="history-code">${session.code}</div>
-        <p>${session.observedCount}/${session.expectedCount} observers · ${session.healthLabel}</p>
+        <div class="history-code">${escapeHtml(session.code)}</div>
+        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(session.healthLabel)}</p>
       </div>
       <div>
         <strong class="${healthClass(session.healthLabel)}">${session.healthPercent}%</strong>
@@ -1055,11 +1617,291 @@ function renderHistory(sessions) {
   }
 }
 
+function drawerStat(label, value) {
+  return `
+    <div class="drawer-stat">
+      <span class="meta-label">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function drawerListItem(title, detail, meta = '') {
+  return `
+    <div class="drawer-list__item">
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+      ${meta ? `<div class="small-note">${escapeHtml(meta)}</div>` : ''}
+    </div>
+  `;
+}
+
+function buildDrawerContent() {
+  const snapshot = state.snapshot;
+  const session = currentSession();
+  const directory = selectableObservers();
+  const mappedObservers = mapKnownObservers(session);
+  const receipts = Array.isArray(session?.receipts) ? session.receipts : [];
+  const historySessions = state.trackedSessionIds
+    .map((id) => state.sessions.get(id))
+    .filter(Boolean);
+  const transport = snapshot ? transportSummary(snapshot) : null;
+  const signal = signalSummary(session);
+  const latency = latencySummary(session);
+
+  switch (state.drawer.kind) {
+    case 'session':
+      return {
+        meta: 'Command Sequence',
+        title: session ? `Session ${session.code}` : 'Session Control',
+        body: `
+          <section class="drawer-card">
+            <h3>Session Summary</h3>
+            <div class="drawer-stat-grid">
+              ${drawerStat('Status', session?.status?.toUpperCase() || 'IDLE')}
+              ${drawerStat('Share Window', session ? formatDateTime(session.resultExpiresAt) : retentionNote())}
+              ${drawerStat('Uses Remaining', session ? String(session.usesRemaining) : '--')}
+              ${drawerStat('Hash', session?.messageHash || 'Pending')}
+            </div>
+          </section>
+          <section class="drawer-card">
+            <h3>Operator Instructions</h3>
+            <pre class="drawer-codeblock">${escapeHtml(session?.instructions || 'Create a session to start listening.')}</pre>
+          </section>
+          <section class="drawer-card">
+            <h3>Matched Message</h3>
+            <pre class="drawer-codeblock">${escapeHtml(session?.messageBody || 'Waiting for an incoming message on the configured test channel.')}</pre>
+          </section>
+        `,
+      };
+    case 'transport':
+      return {
+        meta: 'Transport Matrix',
+        title: 'Network Transport',
+        body: `
+          <section class="drawer-card">
+            <h3>Live Transport</h3>
+            <div class="drawer-stat-grid">
+              ${drawerStat('State', transport?.stateLabel || 'Offline')}
+              ${drawerStat('Broker', snapshot?.mqtt?.broker || 'Unknown')}
+              ${drawerStat('Channel', snapshot?.testChannel?.name ? `#${snapshot.testChannel.name}` : 'Unknown')}
+              ${drawerStat('Topics', Array.isArray(snapshot?.mqtt?.topics) ? String(snapshot.mqtt.topics.length) : '0')}
+            </div>
+          </section>
+          <section class="drawer-card">
+            <h3>Observer Window</h3>
+            <div class="drawer-list">
+              ${drawerListItem(
+                'Retention Window',
+                transport?.summary || 'Awaiting observer directory.',
+                transport?.detail || '',
+              )}
+            </div>
+          </section>
+        `,
+      };
+    case 'observers':
+      return {
+        meta: 'Target Matrix',
+        title: 'Observer Targeting',
+        body: directory.length > 0
+          ? `
+            <section class="drawer-card">
+              <h3>Target Summary</h3>
+              <div class="drawer-stat-grid">
+                ${drawerStat('Default Source', snapshot?.defaultObserverSource || 'Unknown')}
+                ${drawerStat('Directory Size', String(directory.length))}
+                ${drawerStat('Selected Mode', usingDefaultObserverSet() ? 'Default set' : 'Custom set')}
+                ${drawerStat('Active Nodes', String(snapshot?.observerStats?.activeCount || 0))}
+              </div>
+            </section>
+            <section class="drawer-card">
+              <h3>Node Inventory</h3>
+              <div class="drawer-list">
+                ${directory.map((observer) => drawerListItem(
+                  observer.label,
+                  `${observer.hash || '--'} · ${observer.shortKey}`,
+                  `${observer.packetCount || 0} packet${observer.packetCount === 1 ? '' : 's'} · ${observer.hasLocation ? 'mapped' : 'no coordinates'} · ${observer.isActive ? 'active' : 'idle'}`,
+                )).join('')}
+              </div>
+            </section>
+          `
+          : `
+            <section class="drawer-card">
+              <h3>Observer Targeting</h3>
+              <p>No observers available yet. Node inventory appears as metadata and packets arrive.</p>
+            </section>
+          `,
+      };
+    case 'map':
+      return {
+        meta: 'Geo View',
+        title: 'Coverage Map',
+        body: mappedObservers.length > 0
+          ? `
+            <section class="drawer-card">
+              <h3>Mapped Observers</h3>
+              <div class="drawer-stat-grid">
+                ${drawerStat('Mapped', String(mappedObservers.length))}
+                ${drawerStat('Reached', String(mappedObservers.filter((observer) => observer.seen).length))}
+                ${drawerStat('Theme', state.uiTheme === 'dark' ? 'Dark mode' : 'Light mode')}
+                ${drawerStat('Scope', mapObserverScope === 'expected' ? 'Expected' : 'Directory')}
+              </div>
+            </section>
+            <section class="drawer-card">
+              <h3>Coordinates</h3>
+              <div class="drawer-list">
+                ${mappedObservers.map((observer) => drawerListItem(
+                  observer.label,
+                  `${observer.lat}, ${observer.lon}`,
+                  `${observer.seen ? 'Seen by this check' : 'Not seen by this check'} · ${observer.hash || '--'}`,
+                )).join('')}
+              </div>
+            </section>
+          `
+          : `
+            <section class="drawer-card">
+              <h3>Coverage Map</h3>
+              <p>Waiting for observer coordinates.</p>
+            </section>
+          `,
+      };
+    case 'reports':
+      return {
+        meta: 'Signal Trace',
+        title: 'Technical Logs',
+        body: receipts.length > 0
+          ? `
+            <section class="drawer-card">
+              <h3>Receipt Summary</h3>
+              <div class="drawer-stat-grid">
+                ${drawerStat('Signal Quality', signal.value)}
+                ${drawerStat('Spread', latency.value)}
+                ${drawerStat('Observer Reports', String(receipts.length))}
+                ${drawerStat('Longest Packet', session?.longestPacketDistanceText || '--')}
+                ${drawerStat('Sender', session?.sender || 'Pending')}
+              </div>
+            </section>
+            <section class="drawer-card">
+              <h3>Trace Lines</h3>
+              <div class="console-lines">
+                ${receipts.map((receipt) => `
+                  <div class="console-line">
+                    <strong>${escapeHtml(receipt.observerLabel)}</strong>
+                    <span>${escapeHtml(formatTime(receipt.firstSeenAt))}</span>
+                    <code>${escapeHtml(receipt.messageHash || 'no-hash')}</code>
+                    <span>${escapeHtml((receipt.path || []).join(' -> ') || 'No path data')}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </section>
+          `
+          : `
+            <section class="drawer-card">
+              <h3>Technical Logs</h3>
+              <p>Timeline appears after the first observer report.</p>
+            </section>
+          `,
+      };
+    case 'history':
+      return {
+        meta: 'Session Archive',
+        title: 'Recent Sessions',
+        body: historySessions.length > 0
+          ? `
+            <section class="drawer-card">
+              <h3>Browser Session History</h3>
+              <div class="drawer-list">
+                ${historySessions.map((entry) => drawerListItem(
+                  entry.code,
+                  `${entry.observedCount}/${entry.expectedCount} observers · ${entry.healthPercent}%`,
+                  `${entry.healthLabel} · ${formatTime(entry.createdAt)}`,
+                )).join('')}
+              </div>
+            </section>
+          `
+          : `
+            <section class="drawer-card">
+              <h3>Recent Sessions</h3>
+              <p>No previous checks in this browser session.</p>
+            </section>
+          `,
+      };
+    case 'receipt': {
+      const receipt = receipts.find((entry) => entry.observerKey === state.drawer.key);
+      if (!receipt) {
+        return null;
+      }
+      return {
+        meta: 'Packet Detail',
+        title: receipt.observerLabel,
+        body: `
+          <section class="drawer-card">
+            <h3>Receipt Metrics</h3>
+            <div class="drawer-stat-grid">
+              ${drawerStat('First Seen', formatTime(receipt.firstSeenAt))}
+              ${drawerStat('Message Hash', receipt.messageHash || 'Pending')}
+              ${drawerStat('RSSI', receipt.rssi != null ? String(receipt.rssi) : 'n/a')}
+              ${drawerStat('SNR', receipt.snr != null ? String(receipt.snr) : 'n/a')}
+              ${drawerStat('Duration', receipt.duration != null ? `${receipt.duration} ms` : 'n/a')}
+              ${drawerStat('Distance', receipt.displayDistanceText || receipt.pathDistanceText || 'n/a')}
+              ${drawerStat('Packets', String(receipt.count))}
+            </div>
+          </section>
+          <section class="drawer-card">
+            <h3>Path Trace</h3>
+            <pre class="drawer-codeblock">${escapeHtml((receipt.path || []).join(' -> ') || 'No path data')}</pre>
+          </section>
+        `,
+      };
+    }
+    default:
+      return null;
+  }
+}
+
+function renderDrawer() {
+  if (!ui.detailDrawer || !ui.drawerBody || !ui.drawerMeta || !ui.drawerTitle) {
+    return;
+  }
+  if (!state.drawer.kind) {
+    ui.detailDrawer.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('drawer-open');
+    return;
+  }
+  const content = buildDrawerContent();
+  if (!content) {
+    state.drawer.kind = '';
+    state.drawer.key = '';
+    ui.detailDrawer.setAttribute('aria-hidden', 'true');
+    document.body.classList.remove('drawer-open');
+    return;
+  }
+  ui.drawerMeta.textContent = content.meta;
+  ui.drawerTitle.textContent = content.title;
+  ui.drawerBody.innerHTML = content.body;
+  ui.detailDrawer.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('drawer-open');
+}
+
+function openDrawer(kind, key = '') {
+  state.drawer.kind = kind;
+  state.drawer.key = key;
+  renderDrawer();
+}
+
+function closeDrawer() {
+  state.drawer.kind = '';
+  state.drawer.key = '';
+  renderDrawer();
+}
+
 function render() {
   const snapshot = state.snapshot;
   if (!snapshot) {
     return;
   }
+  applyUiTheme();
 
   const channelLabel = `#${snapshot.testChannel.name}`;
   const historySessions = state.trackedSessionIds
@@ -1097,6 +1939,10 @@ function render() {
     ui.healthLabel.className = '';
     ui.healthPercent.innerHTML = '<span class="score-num">0</span><span class="score-unit">%</span>';
     ui.observedCount.textContent = '0 / 0';
+    ui.repeaterCount.textContent = '0';
+    if (ui.longestPacketDistance) {
+      ui.longestPacketDistance.textContent = '--';
+    }
     ui.senderName.textContent = 'Pending';
     ui.channelName.textContent = channelLabel;
     ui.messagePreview.textContent = `Waiting for your ${channelLabel} message.`;
@@ -1108,7 +1954,9 @@ function render() {
     renderReceiptTimeline(null);
     renderReceipts(null);
     renderHistory(historySessions);
+    renderGlanceMetrics(null);
     updateRing(0, 'Waiting');
+    renderDrawer();
     return;
   }
 
@@ -1126,6 +1974,19 @@ function render() {
   ui.healthLabel.className = healthClass(session.healthLabel);
   ui.healthPercent.innerHTML = `<span class="score-num">${session.healthPercent}</span><span class="score-unit">%</span>`;
   ui.observedCount.textContent = `${session.observedCount} / ${session.expectedCount}`;
+  ui.repeaterCount.textContent = String(session.repeaterCount || 0);
+  if (ui.longestPacketDistance) {
+    const distanceText = session.longestPacketDistanceText || '--';
+    ui.longestPacketDistance.textContent = session.longestPacketDistanceSource === 'observer-span'
+      ? `${distanceText} span`
+      : distanceText;
+    if (session.longestPacketDistancePair) {
+      ui.longestPacketDistance.title =
+        `${session.longestPacketDistancePair.fromLabel} to ${session.longestPacketDistancePair.toLabel}`;
+    } else {
+      ui.longestPacketDistance.removeAttribute('title');
+    }
+  }
   ui.senderName.textContent = session.sender || 'Pending';
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
@@ -1142,11 +2003,24 @@ function render() {
   renderReceiptTimeline(session);
   renderReceipts(session);
   renderHistory(historySessions);
+  renderGlanceMetrics(session);
+  renderDrawer();
 }
 
 function applySnapshot(snapshot) {
+  const previousRegionGroup = state.selectedRegionGroup;
+  const previousRegion = state.selectedRegion;
+  const previousObserverKeys = state.selectedObserverKeys;
+  reconcileRegionSelection(snapshot);
   state.snapshot = snapshot;
   render();
+  if (
+    previousRegionGroup !== state.selectedRegionGroup
+    || previousRegion !== state.selectedRegion
+    || !sameKeys(previousObserverKeys, state.selectedObserverKeys)
+  ) {
+    scheduleSessionRetarget();
+  }
 }
 
 async function refreshTrackedSessions() {
@@ -1293,6 +2167,7 @@ ui.observerAllowlistClear.addEventListener('click', () => {
   if (usingDefaultObserverSet()) {
     return;
   }
+  state.selectedRegionGroup = null;
   state.selectedRegion = null;
   state.selectedObserverKeys = [];
   saveSelectedObserverKeys();
@@ -1300,10 +2175,55 @@ ui.observerAllowlistClear.addEventListener('click', () => {
   scheduleSessionRetarget();
 });
 
-ui.mapThemeToggle.addEventListener('click', () => {
-  state.mapTheme = state.mapTheme === 'dark' ? 'light' : 'dark';
-  saveMapTheme();
-  render();
+if (ui.uiThemeToggle) {
+  ui.uiThemeToggle.addEventListener('click', () => {
+    state.uiTheme = state.uiTheme === 'dark' ? 'light' : 'dark';
+    saveUiTheme();
+    render();
+  });
+}
+
+if (ui.drawerClose) {
+  ui.drawerClose.addEventListener('click', () => {
+    closeDrawer();
+  });
+}
+
+if (ui.drawerScrim) {
+  ui.drawerScrim.addEventListener('click', () => {
+    closeDrawer();
+  });
+}
+
+function targetIsPanelInteractive(target) {
+  return Boolean(target.closest(
+    'button, a, input, label, .leaflet-container, .leaflet-control-container, .leaflet-popup, .leaflet-marker-pane, .detail-drawer',
+  ));
+}
+
+document.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+  const action = event.target.closest('[data-drawer-action]');
+  if (action) {
+    event.preventDefault();
+    openDrawer(action.dataset.drawerAction || '');
+    return;
+  }
+
+  const receiptCard = event.target.closest('.receipt-card[data-observer-key]');
+  if (receiptCard && ui.receipts?.contains(receiptCard) && !targetIsPanelInteractive(event.target)) {
+    openDrawer('receipt', receiptCard.dataset.observerKey || '');
+    return;
+  }
+
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.drawer.kind) {
+    closeDrawer();
+  }
 });
 
 bootstrap();
