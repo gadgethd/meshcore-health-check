@@ -99,6 +99,9 @@ const state = {
   socketRetryTimer: 0,
   sessionRetargetTimer: 0,
   refreshInFlight: false,
+  sessionRefreshInFlight: false,
+  sessionRefreshQueued: false,
+  sessionRefreshTimer: 0,
   observerAllowlistSignature: '',
   map: {
     instance: null,
@@ -2024,52 +2027,71 @@ function applySnapshot(snapshot) {
 }
 
 async function refreshTrackedSessions() {
-  const ids = dedupe([
-    ...state.trackedSessionIds,
-    state.sharedSessionId,
-  ]);
-  if (ids.length === 0) {
+  if (state.sessionRefreshInFlight) {
+    state.sessionRefreshQueued = true;
     return;
   }
-
-  const results = await Promise.all(ids.map(async (sessionId) => {
-    const response = await apiFetch(`/api/sessions/${sessionId}`);
-    if (response.status === 404) {
-      return { sessionId, missing: true };
-    }
-    if (response.status === 403) {
-      return { sessionId, turnstileRequired: true };
-    }
-    if (!response.ok) {
-      return { sessionId, failed: true };
-    }
-    return {
-      sessionId,
-      session: await response.json(),
-    };
-  }));
-
-  for (const result of results) {
-    if (result.turnstileRequired) {
-      redirectToLanding();
-      return;
-    }
-    if (result.missing) {
-      if (result.sessionId === state.sharedSessionId) {
-        state.sharedSessionMissing = true;
-        state.sessions.delete(result.sessionId);
+  state.sessionRefreshInFlight = true;
+  try {
+    do {
+      state.sessionRefreshQueued = false;
+      const ids = dedupe([
+        ...state.trackedSessionIds,
+        state.sharedSessionId,
+      ]).slice(0, 8);
+      if (ids.length === 0) {
+        return;
       }
-      removeTrackedSession(result.sessionId);
-      continue;
-    }
-    if (result.failed || !result.session) {
-      continue;
-    }
-    if (result.sessionId === state.sharedSessionId) {
-      state.sharedSessionMissing = false;
-    }
-    state.sessions.set(result.session.id, result.session);
+
+      const response = await apiFetch(`/api/sessions?ids=${encodeURIComponent(ids.join(','))}`);
+      if (response.status === 403) {
+        redirectToLanding();
+        return;
+      }
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      const results = Array.isArray(payload?.sessions) ? payload.sessions : [];
+
+      for (const result of results) {
+        if (result.missing) {
+          if (result.sessionId === state.sharedSessionId) {
+            state.sharedSessionMissing = true;
+            state.sessions.delete(result.sessionId);
+          }
+          removeTrackedSession(result.sessionId);
+          continue;
+        }
+        if (!result.session) {
+          continue;
+        }
+        if (result.sessionId === state.sharedSessionId) {
+          state.sharedSessionMissing = false;
+        }
+        state.sessions.set(result.session.id, result.session);
+      }
+    } while (state.sessionRefreshQueued);
+  } finally {
+    state.sessionRefreshInFlight = false;
   }
+}
+
+function scheduleTrackedSessionRefresh() {
+  if (state.sessionRefreshTimer) {
+    if (state.sessionRefreshInFlight) {
+      state.sessionRefreshQueued = true;
+    }
+    return;
+  }
+  state.sessionRefreshTimer = window.setTimeout(() => {
+    state.sessionRefreshTimer = 0;
+    refreshTrackedSessions().then(() => {
+      render();
+    }).catch(() => {
+      // The next polling cycle will retry without creating an unhandled rejection.
+    });
+  }, 100);
 }
 
 async function refreshFromServer() {
@@ -2116,9 +2138,9 @@ function connectSocket() {
       const message = JSON.parse(event.data);
       if (message.type === 'snapshot') {
         applySnapshot(message.data);
-        refreshTrackedSessions().then(() => {
-          render();
-        });
+        scheduleTrackedSessionRefresh();
+      } else if (message.type === 'session-update') {
+        scheduleTrackedSessionRefresh();
       }
     } catch {
       // ignore malformed frames

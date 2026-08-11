@@ -193,6 +193,25 @@ test('POST /api/sessions creates a session and GET returns it', async () => {
   assert.equal(session.shareUrl, `${baseUrl}/share/${created.id}`);
 });
 
+test('GET /api/sessions batches tracked session reads', async () => {
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+
+  const response = await fetch(
+    `${baseUrl}/api/sessions?ids=${encodeURIComponent(`${created.id},missing-session`)}`,
+  );
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.sessions.length, 2);
+  assert.equal(payload.sessions[0].session.id, created.id);
+  assert.equal(payload.sessions[1].missing, true);
+});
+
 test('created sessions are persisted in the results file', async () => {
   const createResponse = await fetch(`${baseUrl}/api/sessions`, {
     method: 'POST',
@@ -265,13 +284,68 @@ test('fixture packet ingest matches a session and records observer receipts', as
   assert.equal(sessionResponse.status, 200);
 
   const session = await sessionResponse.json();
-  assert.equal(session.messageHash, packetFixture.messageHash);
+  assert.equal(session.messageHash, envelope.hash);
   assert.equal(session.sender, packetFixture.sender);
   assert.equal(session.messageBody, message);
   assert.equal(session.channelHash, '99');
   assert.equal(session.observedCount, 2);
   assert.equal(session.receipts.length, 2);
-  assert.equal(session.receipts[0].messageHash, packetFixture.messageHash);
+  assert.equal(session.receipts[0].messageHash, envelope.hash);
+});
+
+test('MQTT validation rejects malformed payloads and non-public-key topics before activity', async () => {
+  const observerKey = 'ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789';
+  ingestMqttMessage(
+    'meshcore/BOS/ABCD/status',
+    Buffer.from(JSON.stringify({ name: 'Invalid Key' })),
+  );
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/status`,
+    Buffer.from('{malformed-json'),
+  );
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/packets`,
+    Buffer.alloc(64 * 1024 + 1, 0x41),
+  );
+
+  const response = await fetch(`${baseUrl}/api/bootstrap`);
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(
+    payload.observerDirectory.some((observer) => observer.key === observerKey),
+    false,
+  );
+});
+
+test('receipt matching rejects a wrapper hash that differs from the decoded packet hash', async () => {
+  const observerKey = packetFixture.observerKeys[0];
+  const createResponse = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(createResponse.status, 201);
+  const created = await createResponse.json();
+  const envelope = buildGroupTextEnvelope({
+    secretHex: process.env.TEST_CHANNEL_SECRET,
+    sender: packetFixture.sender,
+    message: `mismatched wrapper ${created.code}`,
+    messageHash: '0000000000000000',
+    timestamp: packetFixture.timestamp,
+  });
+  envelope.hash = 'DEADBEEF';
+
+  ingestMqttMessage(
+    `meshcore/BOS/${observerKey}/packets`,
+    Buffer.from(JSON.stringify(envelope)),
+  );
+
+  const sessionResponse = await fetch(`${baseUrl}/api/sessions/${created.id}`);
+  assert.equal(sessionResponse.status, 200);
+  const session = await sessionResponse.json();
+  assert.equal(session.status, 'waiting');
+  assert.equal(session.observedCount, 0);
+  assert.equal(session.receipts.length, 0);
 });
 
 test('fixture packet ingest matches sessions for 3-byte path hashes', async () => {
@@ -305,7 +379,7 @@ test('fixture packet ingest matches sessions for 3-byte path hashes', async () =
   assert.equal(sessionResponse.status, 200);
 
   const session = await sessionResponse.json();
-  assert.equal(session.messageHash, 'AB12CD34EF56AB78');
+  assert.equal(session.messageHash, envelope.hash);
   assert.equal(session.sender, 'Packet Tester');
   assert.equal(session.messageBody, message);
   assert.equal(session.repeaterCount, 3);
@@ -566,7 +640,7 @@ test('fixture packet ingest matches sessions for 2-byte path hashes', async () =
   assert.equal(sessionResponse.status, 200);
 
   const session = await sessionResponse.json();
-  assert.equal(session.messageHash, '11223344AABBCCDD');
+  assert.equal(session.messageHash, envelope.hash);
   assert.equal(session.sender, 'Packet Tester');
   assert.equal(session.messageBody, message);
   assert.equal(session.repeaterCount, 3);
@@ -675,9 +749,7 @@ test('observer metadata does not rename other observers through origin_id or ori
   const observer = payload.observerDirectory.find((entry) => entry.key === observerKey);
   const otherObserver = payload.observerDirectory.find((entry) => entry.key === otherKey);
 
-  assert.equal(observer?.name, null);
-  assert.equal(observer?.lat, null);
-  assert.equal(observer?.lon, null);
+  assert.equal(observer, undefined);
   assert.equal(otherObserver?.name, 'Known Observer Name');
 });
 
@@ -720,14 +792,11 @@ test('decoded mesh packet metadata does not attach other nodes to the mqtt obser
   const payload = await response.json();
   const observer = payload.observerDirectory.find((entry) => entry.key === observerKey);
 
-  assert.equal(observer?.name, null);
-  assert.equal(observer?.lat, null);
-  assert.equal(observer?.lon, null);
-  assert.equal(observer?.hasLocation, false);
+  assert.equal(observer, undefined);
 
   ingestMqttMessage(
     `meshcore/BOS/${FAKE_WORCESTER_OBSERVER_KEY}/status`,
-    Buffer.from('{}'),
+    Buffer.from(JSON.stringify({ origin_id: FAKE_WORCESTER_OBSERVER_KEY })),
   );
 
   const refreshedResponse = await fetch(`${baseUrl}/api/bootstrap`);
@@ -797,6 +866,7 @@ test('same active message with a later hash alias does not reset receipts or use
     message,
     messageHash: '438DD45E5436A421',
     timestamp: 1762000000,
+    path: ['11'],
   });
   const aliasEnvelope = buildGroupTextEnvelope({
     secretHex: process.env.TEST_CHANNEL_SECRET,
@@ -804,6 +874,7 @@ test('same active message with a later hash alias does not reset receipts or use
     message,
     messageHash: '438dd45e5436a421-variant',
     timestamp: 1762000000,
+    path: ['22'],
   });
 
   ingestMqttMessage(
@@ -821,7 +892,7 @@ test('same active message with a later hash alias does not reset receipts or use
   const session = await sessionResponse.json();
   assert.equal(session.useCount, 1);
   assert.equal(session.status, 'active');
-  assert.equal(session.messageHash, '438DD45E5436A421');
+  assert.equal(session.messageHash, firstEnvelope.hash);
   assert.equal(session.observedCount, 2);
   assert.equal(session.receipts.length, 2);
 });
