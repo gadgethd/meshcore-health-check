@@ -2,9 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {
-  createDecipheriv,
   createHash,
-  createHmac,
   randomBytes,
   randomUUID,
 } from 'node:crypto';
@@ -16,7 +14,6 @@ import mqtt from 'mqtt';
 import { WebSocketServer } from 'ws';
 import {
   calculateChannelHash,
-  decodePathLenByte,
   normalizeHex,
   normalizeKey,
   normalizeLogLevel,
@@ -434,7 +431,7 @@ const OBSERVER_HASH_DISPLAY_BYTES = Math.max(
   1,
   Math.min(3, Math.round(envNumber('OBSERVER_HASH_DISPLAY_BYTES', 1))),
 );
-const OBSERVER_RETENTION_SECONDS = envNumber('OBSERVER_RETENTION_SECONDS', 14400);
+const OBSERVER_RETENTION_SECONDS = envNumber('OBSERVER_RETENTION_SECONDS', 0);
 const OBSERVER_RETENTION_MS = OBSERVER_RETENTION_SECONDS <= 0
   ? 0
   : Math.max(300, OBSERVER_RETENTION_SECONDS) * 1000;
@@ -527,43 +524,6 @@ if (!testChannelHash) {
     }
   }
 }
-
-function buildDecoderKeyCandidate(secretHex, channelHash = '') {
-  const normalizedSecret = normalizeHex(secretHex);
-  if (!normalizedSecret) {
-    return null;
-  }
-  const secretBytes = Buffer.from(normalizedSecret, 'hex');
-  if (secretBytes.length < 16) {
-    return null;
-  }
-  const aesKey = secretBytes.subarray(0, 16);
-  const hmacKey = Buffer.alloc(32);
-  secretBytes.copy(hmacKey, 0, 0, Math.min(secretBytes.length, 32));
-  return {
-    secretHex: normalizedSecret,
-    channelHash: String(channelHash || '').trim().toLowerCase(),
-    aesKey,
-    hmacKey,
-  };
-}
-
-const decoderKeyCandidates = (() => {
-  if (envTestChannelSecret) {
-    const candidate = buildDecoderKeyCandidate(envTestChannelSecret, testChannelHash);
-    if (candidate) {
-      return [candidate];
-    }
-  }
-  const fallback = testChannelHash ? channelHashToInfo.get(testChannelHash) : null;
-  if (fallback?.secret) {
-    const candidate = buildDecoderKeyCandidate(fallback.secret, testChannelHash);
-    if (candidate) {
-      return [candidate];
-    }
-  }
-  return [];
-})();
 
 const meshPacketDecoderKeyStore = envTestChannelSecret
   ? MeshCorePacketDecoder.createKeyStore({
@@ -1781,207 +1741,6 @@ function extractDeviceName(obj, topic = '') {
   }
 
   return '';
-}
-
-function parsePacketHex(rawHex) {
-  const normalized = normalizeHex(rawHex);
-  if (!normalized || normalized.length < 4) {
-    return null;
-  }
-  const bytes = Buffer.from(normalized, 'hex');
-  if (bytes.length < 2) {
-    return null;
-  }
-
-  let offset = 0;
-  const header = bytes[offset];
-  const routeType = header & 0x03;
-  const payloadType = (header >> 2) & 0x0F;
-  offset += 1;
-
-  if (routeType === 0 || routeType === 3) {
-    if (bytes.length < offset + 4) {
-      return null;
-    }
-    offset += 4;
-  }
-
-  if (bytes.length < offset + 1) {
-    return null;
-  }
-  const pathInfo = decodePathLenByte(bytes[offset]);
-  offset += 1;
-  if (!pathInfo) {
-    return null;
-  }
-
-  if (bytes.length < offset + pathInfo.byteLength) {
-    return null;
-  }
-  const pathBytes = bytes.subarray(offset, offset + pathInfo.byteLength);
-  const path = [];
-  for (let index = 0; index < pathInfo.hopCount; index += 1) {
-    const start = index * pathInfo.hashSize;
-    const hop = normalizePathHop(
-      pathBytes.subarray(start, start + pathInfo.hashSize).toString('hex'),
-    );
-    if (hop) {
-      path.push(hop);
-    }
-  }
-  offset += pathInfo.byteLength;
-
-  if (bytes.length < offset) {
-    return null;
-  }
-  return {
-    routeType,
-    payloadType,
-    pathHashSize: pathInfo.hashSize,
-    path,
-    payloadBytes: bytes.subarray(offset),
-  };
-}
-
-function parseGroupTextPayload(packet) {
-  if (!packet || packet.payloadType !== 5) {
-    return null;
-  }
-  const payloadBytes = packet.payloadBytes;
-  if (!payloadBytes || payloadBytes.length < 4) {
-    return null;
-  }
-  return {
-    channelHash: payloadBytes.subarray(0, 1).toString('hex').toLowerCase(),
-    macBytes: payloadBytes.subarray(1, 3),
-    encryptedBytes: payloadBytes.subarray(3),
-  };
-}
-
-function decryptAesEcbTruncated(aesKey, encryptedBytes) {
-  if (!aesKey || aesKey.length !== 16 || !encryptedBytes || encryptedBytes.length === 0) {
-    return null;
-  }
-  const paddedLength = Math.ceil(encryptedBytes.length / 16) * 16;
-  const padded = Buffer.alloc(paddedLength);
-  encryptedBytes.copy(padded);
-  try {
-    const decipher = createDecipheriv('aes-128-ecb', aesKey, null);
-    decipher.setAutoPadding(false);
-    const decrypted = Buffer.concat([decipher.update(padded), decipher.final()]);
-    return decrypted.subarray(0, encryptedBytes.length);
-  } catch {
-    return null;
-  }
-}
-
-function hasValidGroupTextMac(hmacKey, macBytes, encryptedBytes) {
-  if (!hmacKey || hmacKey.length === 0 || !macBytes || macBytes.length < 2) {
-    return false;
-  }
-  const digest = createHmac('sha256', hmacKey).update(encryptedBytes).digest();
-  return macBytes[0] === digest[0] && macBytes[1] === digest[1];
-}
-
-function sanitizeDecodedText(value) {
-  return String(value || '')
-    .replace(/\uFFFD/g, '')
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
-    .replace(/\x00+$/g, '')
-    .trim();
-}
-
-function evaluateDecodedGroupText(plaintextBytes) {
-  if (!plaintextBytes || plaintextBytes.length < 6) {
-    return null;
-  }
-  const timestamp = plaintextBytes.readUInt32LE(0);
-  const year = new Date(timestamp * 1000).getUTCFullYear();
-  if (year < 2023 || year > 2035) {
-    return null;
-  }
-  const messageBytes = plaintextBytes.subarray(5);
-  if (messageBytes.length === 0) {
-    return null;
-  }
-  let printableCount = 0;
-  for (const value of messageBytes.values()) {
-    if ((value >= 32 && value <= 126) || value === 9 || value === 10 || value === 13) {
-      printableCount += 1;
-    }
-  }
-  const printableRatio = printableCount / messageBytes.length;
-  if (printableRatio < 0.7) {
-    return null;
-  }
-
-  const decoded = sanitizeDecodedText(messageBytes.toString('utf8'));
-  if (!decoded) {
-    return null;
-  }
-
-  const splitIndex = decoded.indexOf(': ');
-  let sender = '';
-  let message = decoded;
-  if (splitIndex > 0 && splitIndex < 50) {
-    const maybeSender = decoded.slice(0, splitIndex).trim();
-    if (maybeSender && !/[:\[\]]/.test(maybeSender)) {
-      sender = maybeSender;
-      message = decoded.slice(splitIndex + 2).trim();
-    }
-  }
-
-  if (!message) {
-    return null;
-  }
-
-  return {
-    timestamp,
-    sender,
-    message,
-    score: printableRatio + (decoded.includes(': ') ? 0.35 : 0),
-  };
-}
-
-function tryDecodeGroupText(groupPayload) {
-  if (!groupPayload || decoderKeyCandidates.length === 0) {
-    return null;
-  }
-  if (!shouldDecodeChannel(testChannelHash, groupPayload.channelHash)) {
-    return null;
-  }
-  let bestWeakMatch = null;
-
-  for (const candidate of decoderKeyCandidates) {
-    const plaintext = decryptAesEcbTruncated(candidate.aesKey, groupPayload.encryptedBytes);
-    if (!plaintext) {
-      continue;
-    }
-    const decoded = evaluateDecodedGroupText(plaintext);
-    if (!decoded) {
-      continue;
-    }
-    const macValid = hasValidGroupTextMac(
-      candidate.hmacKey,
-      groupPayload.macBytes,
-      groupPayload.encryptedBytes,
-    );
-    const result = {
-      channelHash: groupPayload.channelHash,
-      sender: decoded.sender,
-      message: decoded.message,
-      timestamp: decoded.timestamp,
-      macValid,
-      score: decoded.score,
-    };
-    if (macValid) {
-      return result;
-    }
-    if (!bestWeakMatch || result.score > bestWeakMatch.score) {
-      bestWeakMatch = result;
-    }
-  }
-  return bestWeakMatch;
 }
 
 function decodeMeshPacket(rawHex) {
@@ -3387,6 +3146,18 @@ app.get('/share/:sessionId', (request, response) => {
 });
 
 app.get(/.*/, (request, response) => {
+  const requestPath = request.path;
+  const isApiRoute = requestPath.startsWith('/api/');
+  const hasAssetExtension = path.extname(requestPath) !== '';
+  const acceptsHtml = request.accepts('html') === 'html';
+  if (isApiRoute || hasAssetExtension || !acceptsHtml) {
+    if (isApiRoute) {
+      response.status(404).json({ error: 'not_found' });
+    } else {
+      response.status(404).type('text/plain').send('Not found');
+    }
+    return;
+  }
   if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
     response.redirect('/');
     return;
@@ -3561,7 +3332,7 @@ function startRuntime() {
         testChannelHash ? `#${testChannelName} (${testChannelHash})` : `#${testChannelName}`
       }`,
     );
-    if (!decoderKeyCandidates.length) {
+    if (!meshPacketDecoderKeyStore) {
       logger.warn('[web] no decoder key configured for the test channel');
     }
     logger.info(`[web] log level ${logger.level}`);

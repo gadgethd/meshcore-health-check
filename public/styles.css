@@ -87,7 +87,6 @@ button,
 input,
 label,
 .dock-nav__item,
-.panel-lens,
 .ghost-button,
 .primary-button {
   min-height: 44px;
@@ -136,7 +135,6 @@ code {
   padding: 24px 0 52px;
 }
 
-.command-dock,
 .toolbar,
 .hero-panel,
 .glance-card,
@@ -150,7 +148,6 @@ code {
   -webkit-backdrop-filter: blur(26px) saturate(140%);
 }
 
-.command-dock::before,
 .toolbar::before,
 .hero-panel::before,
 .glance-card::before,
@@ -163,25 +160,6 @@ code {
   border: 1px solid rgba(255, 255, 255, 0.045);
   background: var(--panel-overlay);
   pointer-events: none;
-}
-
-.command-dock {
-  display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 1.3fr) minmax(240px, 0.9fr);
-  gap: 18px 22px;
-  align-items: start;
-  padding: 24px 24px 20px;
-  border-radius: var(--radius-xl);
-  position: relative;
-  top: auto;
-  min-height: auto;
-}
-
-.hero-band {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.92fr) minmax(180px, 0.4fr);
-  gap: 16px;
-  align-items: stretch;
 }
 
 .hero-panel {
@@ -389,8 +367,7 @@ code {
 
 .pill,
 .ghost-button,
-.primary-button,
-.panel-lens {
+.primary-button {
   appearance: none;
   border-radius: 999px;
   font: inherit;
@@ -605,8 +582,7 @@ body[data-page-mode="share"] .status-pill::before {
 
 .control-button,
 .ghost-button,
-.primary-button,
-.panel-lens {
+.primary-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -619,8 +595,7 @@ body[data-page-mode="share"] .status-pill::before {
     opacity 180ms ease;
 }
 
-.ghost-button,
-.panel-lens {
+.ghost-button {
   padding: 0.74rem 0.95rem;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
@@ -640,26 +615,16 @@ body[data-page-mode="share"] .status-pill::before {
   box-shadow: 0 10px 24px rgba(4, 10, 18, 0.24);
 }
 
-.panel-lens {
-  padding: 0.5rem 0.85rem;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
 .ghost-button:hover,
 .primary-button:hover,
-.panel-lens:hover,
 .ghost-button:focus-visible,
-.primary-button:focus-visible,
-.panel-lens:focus-visible {
+.primary-button:focus-visible {
   transform: translateY(-1px);
   outline: none;
 }
 
 .ghost-button:hover,
-.ghost-button:focus-visible,
-.panel-lens:hover,
-.panel-lens:focus-visible {
+.ghost-button:focus-visible {
   border-color: rgba(141, 182, 255, 0.14);
   background: rgba(141, 182, 255, 0.06);
   color: var(--text);
@@ -672,8 +637,7 @@ body[data-page-mode="share"] .status-pill::before {
 }
 
 .ghost-button:disabled,
-.primary-button:disabled,
-.panel-lens:disabled {
+.primary-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
   transform: none;
@@ -1907,15 +1871,6 @@ body[data-page-mode="share"] .share-hidden {
     width: min(1280px, calc(100vw - 28px));
   }
 
-  .hero-band {
-    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  }
-
-  .hero-actions-stack {
-    grid-column: 1 / -1;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
   .glance-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1929,15 +1884,6 @@ body[data-page-mode="share"] .share-hidden {
   .noc-shell {
     width: min(1100px, calc(100vw - 24px));
     padding-top: 16px;
-  }
-
-  .hero-band {
-    grid-template-columns: 1fr;
-    gap: 14px;
-  }
-
-  .hero-actions-stack {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .dock-status-stack,
@@ -1974,10 +1920,6 @@ body[data-page-mode="share"] .share-hidden {
   .hero-panel,
   .panel {
     border-radius: 22px;
-  }
-
-  .hero-band {
-    gap: 14px;
   }
 
   .hero-panel {
@@ -2020,14 +1962,6 @@ body[data-page-mode="share"] .share-hidden {
     display: none;
   }
 
-  .hero-actions-stack {
-    grid-template-columns: 1fr;
-  }
-
-  .hero-actions-stack > * {
-    width: 100%;
-  }
-
   .toolbar-copy h2 {
     font-size: 1.35rem;
   }
@@ -2055,10 +1989,6 @@ body[data-page-mode="share"] .share-hidden {
 
   .workspace {
     gap: 14px;
-  }
-
-  .hero-band {
-    order: 0;
   }
 
   .command-grid {
@@ -2324,12 +2254,6 @@ body[data-page-mode="share"] .share-hidden {
 
 .telemetry-strip .sparkline {
   max-width: 220px;
-}
-
-.telemetry-strip .panel-lens {
-  padding: 0;
-  border: 0;
-  background: transparent;
 }
 
 .marquee-panel {
@@ -2606,12 +2530,6 @@ body[data-page-mode="share"] .ledger-panel .history-list {
     padding: 12px 16px 18px;
   }
 
-  .action-menu__panel {
-    top: auto;
-    bottom: calc(100% + 10px);
-    width: 100%;
-  }
-
   .telemetry-strip {
     grid-template-columns: 1fr;
     overflow-x: visible;
@@ -2765,7 +2683,6 @@ body[data-ui-theme="light"] .observer-pill .status,
 body[data-ui-theme="light"] .timeline-track,
 body[data-ui-theme="light"] .meter-track,
 body[data-ui-theme="light"] .score-ring,
-body[data-ui-theme="light"] .action-menu__panel,
 body[data-ui-theme="light"] .drawer-head,
 body[data-ui-theme="light"] .drawer-scrim {
   border-color: rgba(43, 76, 124, 0.12);
@@ -2774,7 +2691,6 @@ body[data-ui-theme="light"] .drawer-scrim {
 body[data-ui-theme="light"] .pill,
 body[data-ui-theme="light"] .dock-meta__item,
 body[data-ui-theme="light"] .observer-pill .status,
-body[data-ui-theme="light"] .action-menu__panel,
 body[data-ui-theme="light"] .drawer-head {
   background: rgba(255, 255, 255, 0.86);
   color: var(--text);
@@ -2830,11 +2746,6 @@ body[data-ui-theme="light"] .timeline-fill {
 body[data-ui-theme="light"] .timeline-dot {
   border-color: rgba(255, 255, 255, 0.92);
   box-shadow: 0 0 16px rgba(39, 98, 210, 0.14);
-}
-
-body[data-ui-theme="light"] .action-menu__button,
-body[data-ui-theme="light"] .action-menu__item {
-  color: #33425b;
 }
 
 body[data-ui-theme="light"] .site-footer a,
@@ -2949,8 +2860,7 @@ body[data-ui-theme="light"] .telemetry-strip__item {
   border-color: rgba(43, 76, 124, 0.12);
 }
 
-body[data-ui-theme="light"] .ghost-button,
-body[data-ui-theme="light"] .panel-lens {
+body[data-ui-theme="light"] .ghost-button {
   border-color: rgba(39, 98, 210, 0.12);
   background: rgba(255, 255, 255, 0.82);
   color: #2b3950;
@@ -2964,9 +2874,7 @@ body[data-ui-theme="light"] .primary-button {
 }
 
 body[data-ui-theme="light"] .ghost-button:hover,
-body[data-ui-theme="light"] .ghost-button:focus-visible,
-body[data-ui-theme="light"] .panel-lens:hover,
-body[data-ui-theme="light"] .panel-lens:focus-visible {
+body[data-ui-theme="light"] .ghost-button:focus-visible {
   border-color: rgba(39, 98, 210, 0.2);
   background: rgba(39, 98, 210, 0.08);
   color: #163a87;
