@@ -152,6 +152,19 @@ test('GET /manifest.webmanifest returns installable app metadata', async () => {
   assert.equal(payload.icons[0].src, '/logo.png');
 });
 
+test('unknown APIs and missing assets return 404 instead of the app shell', async () => {
+  const apiResponse = await fetch(`${baseUrl}/api/does-not-exist`, {
+    headers: { accept: 'application/json' },
+  });
+  assert.equal(apiResponse.status, 404);
+  assert.deepEqual(await apiResponse.json(), { error: 'not_found' });
+
+  const assetResponse = await fetch(`${baseUrl}/missing-dashboard.js`);
+  assert.equal(assetResponse.status, 404);
+  assert.match(assetResponse.headers.get('content-type') || '', /^text\/plain/);
+  assert.equal(await assetResponse.text(), 'Not found');
+});
+
 test('GET /share/:sessionId returns the dashboard shell', async () => {
   const response = await fetch(`${baseUrl}/share/example-session`, {
     redirect: 'manual',

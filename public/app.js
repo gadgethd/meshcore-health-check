@@ -450,6 +450,14 @@ async function apiFetch(url, options = {}) {
   });
 }
 
+async function readJsonResponse(response) {
+  const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+  if (!response.ok || !contentType.includes('application/json')) {
+    throw new Error('dashboard_response_invalid');
+  }
+  return response.json();
+}
+
 function formatTime(timestamp) {
   if (!timestamp) {
     return 'Pending';
@@ -2048,10 +2056,7 @@ async function refreshTrackedSessions() {
         redirectToLanding();
         return;
       }
-      if (!response.ok) {
-        return;
-      }
-      const payload = await response.json();
+      const payload = await readJsonResponse(response);
       const results = Array.isArray(payload?.sessions) ? payload.sessions : [];
 
       for (const result of results) {
@@ -2074,6 +2079,17 @@ async function refreshTrackedSessions() {
     } while (state.sessionRefreshQueued);
   } finally {
     state.sessionRefreshInFlight = false;
+  }
+}
+
+function showDashboardError() {
+  if (ui.transportStatus) {
+    ui.transportStatus.textContent = 'Dashboard connection unavailable — retrying.';
+    ui.transportStatus.classList.remove('waiting', 'online');
+    ui.transportStatus.classList.add('offline');
+  }
+  if (!state.snapshot && ui.sessionInstructions) {
+    ui.sessionInstructions.textContent = 'Dashboard temporarily unavailable. Retrying…';
   }
 }
 
@@ -2101,7 +2117,7 @@ async function refreshFromServer() {
   state.refreshInFlight = true;
   try {
     const response = await apiFetch('/api/bootstrap');
-    const snapshot = await response.json();
+    const snapshot = await readJsonResponse(response);
     if (snapshot.turnstile?.enabled && !snapshot.turnstile.verified && !isSharedRoute()) {
       redirectToLanding();
       return;
@@ -2248,9 +2264,13 @@ window.addEventListener('keydown', (event) => {
   }
 });
 
-bootstrap();
+void bootstrap().catch(() => {
+  showDashboardError();
+});
 window.setInterval(() => {
-  refreshFromServer();
+  void refreshFromServer().catch(() => {
+    showDashboardError();
+  });
 }, 5000);
 
 window.addEventListener('beforeinstallprompt', (event) => {

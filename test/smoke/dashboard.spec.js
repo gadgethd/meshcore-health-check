@@ -132,6 +132,23 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page.getByText('Timeline appears after the first observer report.')).toBeVisible();
 });
 
+test('dashboard reports a retry state when bootstrap returns a non-JSON error', async ({ page }) => {
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    status: 503,
+    contentType: 'text/html',
+    body: '<!doctype html><title>temporarily unavailable</title>',
+  }));
+
+  await page.goto('/app');
+
+  await expect(page.locator('#transport-status')).toHaveText(
+    'Dashboard connection unavailable — retrying.',
+  );
+  await expect(page.locator('#session-instructions')).toHaveText(
+    'Dashboard temporarily unavailable. Retrying…',
+  );
+});
+
 test('share button uses the browser share API with the retained share link', async ({ page }) => {
   await page.addInitScript(() => {
     window.__shareCalls = [];
