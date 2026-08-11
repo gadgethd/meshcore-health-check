@@ -1,5 +1,16 @@
 # Changes
 
+## Unreleased
+
+- validated MQTT observer and packet inputs before attribution, constrained
+  receipt matching to decoded packet identity, batched WebSocket session
+  refreshes, and bounded connection and buffer growth
+- added bounded rate-limit and observer retention, serialized persistence with
+  shutdown flushing, final-use message aliases, and fail-closed Turnstile
+  verification with timeouts
+- pinned GitHub Actions to immutable commits and disabled Turnstile by default
+  when its credentials are not configured
+
 ## v1.3.7
 
 - changed the coverage map to follow the active session's expected observer set

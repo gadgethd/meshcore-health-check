@@ -68,6 +68,7 @@ The backend keeps packet handling scoped to the configured test channel.
 | `MAX_USES_PER_CODE` | `3` | Maximum matching messages per generated code. |
 | `SESSION_RATE_WINDOW_SECONDS` | `600` | Rate-limit window for creating sessions. |
 | `SESSION_RATE_MAX` | `30` | Max session creations per rate-limit window. |
+| `MAX_RATE_LIMIT_BUCKETS` | `10000` | Maximum number of in-memory rate-limit identities retained. |
 
 ## Observers
 
@@ -79,6 +80,11 @@ The backend keeps packet handling scoped to the configured test channel.
 | `OBSERVER_HASH_DISPLAY_BYTES` | `1` | UI hash prefix width: `1` = `AB`, `2` = `ABCD`, `3` = `ABCDEF`. |
 | `OBSERVER_ACTIVE_WINDOW_SECONDS` | `900` | Active observer fallback window when no ranking history exists. |
 | `OBSERVER_RETENTION_SECONDS` | `0` | Age cutoff for dashboard/map observers. Set `0` to disable pruning. |
+| `OBSERVER_ACTIVITY_RETENTION_DAYS` | `30` | Durable observer activity history window. |
+| `MAX_OBSERVER_ENTRIES` | `10000` | Maximum runtime/profile observer entries before oldest unpinned entries are evicted. |
+| `MAX_WS_CONNECTIONS` | `512` | Maximum simultaneous WebSocket clients. |
+| `MAX_WS_BUFFERED_BYTES` | `1048576` | Disconnect slow WebSocket clients above this queued-byte threshold. |
+| `WS_HEARTBEAT_INTERVAL_MS` | `30000` | WebSocket heartbeat and dead-client cleanup interval. |
 
 `OBSERVER_HASH_DISPLAY_BYTES` only changes display labels. It does not restrict
 which packets or path-hop sizes the app accepts.
@@ -113,7 +119,7 @@ Leave `REGIONS_FILE` blank to disable region detection.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TURNSTILE_ENABLED` | `true` | Enables the Cloudflare Turnstile landing flow. |
+| `TURNSTILE_ENABLED` | `false` when keys are blank | Enables the Cloudflare Turnstile landing flow; startup fails if either key is missing. |
 | `TURNSTILE_SITE_KEY` | blank | Public Turnstile site key. |
 | `TURNSTILE_SECRET_KEY` | blank | Secret Turnstile verification key. |
 | `TURNSTILE_API_URL` | Cloudflare verify endpoint | Verification API endpoint. |
@@ -123,6 +129,7 @@ Leave `REGIONS_FILE` blank to disable region detection.
 | `TURNSTILE_BOT_ALLOWLIST` | common social bots | Comma-separated lowercase user-agent fragments. |
 | `TURNSTILE_VERIFY_RATE_WINDOW_SECONDS` | `600` | Rate-limit window for Turnstile verification. |
 | `TURNSTILE_VERIFY_RATE_MAX` | `10` | Max verification attempts per rate-limit window. |
+| `TURNSTILE_VERIFY_TIMEOUT_MS` | `5000` | Maximum time to wait for the upstream verification response. |
 
 Turnstile is recommended for public deployments. Private/internal deployments
 can disable it.

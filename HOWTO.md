@@ -215,5 +215,6 @@ defense. Private/internal deployments can disable it.
   filtered by `OBSERVER_RETENTION_SECONDS`.
 - Region button missing: confirm `REGIONS_FILE` points to a readable GeoJSON
   file and observer coordinates fall inside that file.
-- Turnstile never appears: verify `TURNSTILE_ENABLED`, site key, and secret key.
+- Turnstile never appears: set `TURNSTILE_ENABLED=true` only after configuring both
+  the site key and secret key; startup rejects an incomplete configuration.
 - Turnstile always fails: verify the hostname is allowed in Cloudflare.
