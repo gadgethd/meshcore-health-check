@@ -98,10 +98,20 @@ async function openMockMapSession(page, observerDirectory, expectedObservers) {
     contentType: 'application/json',
     body: JSON.stringify(mapBootstrap(observerDirectory)),
   }));
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify(mapSession(expectedObservers)),
-  }));
+  await page.route('**/api/sessions*', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          sessions: [{
+            sessionId: 'map-session',
+            session: mapSession(expectedObservers),
+          }],
+        }),
+      });
+    }
+    return route.continue();
+  });
   await page.goto('/share/map-session');
 }
 

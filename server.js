@@ -3356,7 +3356,14 @@ function sendLanding(request, response) {
 }
 
 function sendShare(request, response) {
-  response.type('html').send(renderHtmlTemplate(shareHtmlTemplate, request, 'Shared Result'));
+  // Share sessions are scoped to the expected observer set recorded at
+  // creation time; surface that scope so the map renders only the observers
+  // targeted by the selected region (Wave 3 BUG-013 fix).
+  const shareBody = shareHtmlTemplate.replace(
+    '<body class="noc-body" data-page-mode="share"',
+    '<body class="noc-body" data-page-mode="share" data-map-observer-scope="expected"',
+  );
+  response.type('html').send(renderHtmlTemplate(shareBody, request, 'Shared Result'));
 }
 
 app.get('/', (request, response) => {
