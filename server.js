@@ -153,6 +153,22 @@ function normalizeSiteUrl(value) {
   }
 }
 
+function normalizeWebSocketOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw === '*') {
+    return raw;
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return '';
+    }
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
 function normalizeDistanceUnit(value) {
   const normalized = String(value || '').trim().toLowerCase();
   return ['km', 'kilometer', 'kilometers'].includes(normalized) ? 'km' : 'mi';
@@ -452,9 +468,40 @@ const MAX_WS_CONNECTIONS = Math.max(
   1,
   Math.round(envNumber('MAX_WS_CONNECTIONS', 512)),
 );
+const MAX_WS_CONNECTIONS_PER_IP = Math.max(
+  1,
+  Math.round(envNumber('MAX_WS_CONNECTIONS_PER_IP', 128)),
+);
+const MAX_WS_MESSAGE_BYTES = Math.max(
+  1,
+  Math.round(envNumber('MAX_WS_MESSAGE_BYTES', 1048576)),
+);
 const MAX_WS_BUFFERED_BYTES = Math.max(
   65536,
   Math.round(envNumber('MAX_WS_BUFFERED_BYTES', 1048576)),
+);
+const WS_CONNECTION_RATE_WINDOW_MS = Math.max(
+  1,
+  envNumber('WS_CONNECTION_RATE_WINDOW_SECONDS', 60),
+) * 1000;
+const WS_CONNECTION_RATE_MAX = Math.max(
+  1,
+  Math.round(envNumber('WS_CONNECTION_RATE_MAX', 6000)),
+);
+const WS_MESSAGE_RATE_WINDOW_MS = Math.max(
+  1,
+  envNumber('WS_MESSAGE_RATE_WINDOW_SECONDS', 60),
+) * 1000;
+const WS_MESSAGE_RATE_MAX = Math.max(
+  1,
+  Math.round(envNumber('WS_MESSAGE_RATE_MAX', 12000)),
+);
+const WS_ORIGIN_CHECK_ENABLED = envBool('WS_ORIGIN_CHECK_ENABLED', true);
+const WS_ALLOW_MISSING_ORIGIN = envBool('WS_ALLOW_MISSING_ORIGIN', true);
+const WS_ALLOWED_ORIGINS = dedupe(
+  envList('WS_ALLOWED_ORIGINS')
+    .map(normalizeWebSocketOrigin)
+    .filter(Boolean),
 );
 const WS_HEARTBEAT_INTERVAL_MS = Math.max(
   10000,
@@ -730,27 +777,18 @@ let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
 const asyncFileWriteQueues = new Map();
 
+function atomicTempPath(filePath) {
+  return `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+}
+
 function writeJsonFileAtomic(filePath, payload) {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = atomicTempPath(filePath);
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(tempPath, body, 'utf8');
     fs.renameSync(tempPath, filePath);
   } catch (error) {
-    if (error?.code === 'EBUSY' || error?.code === 'EXDEV') {
-      try {
-        fs.writeFileSync(filePath, body, 'utf8');
-        try {
-          fs.unlinkSync(tempPath);
-        } catch {
-          // ignore cleanup failure
-        }
-        return;
-      } catch (fallbackError) {
-        logger.warn(`[storage] failed to write ${filePath}: ${fallbackError.message}`);
-      }
-    }
     logger.warn(`[storage] failed to write ${filePath}: ${error.message}`);
     try {
       fs.unlinkSync(tempPath);
@@ -762,23 +800,13 @@ function writeJsonFileAtomic(filePath, payload) {
 
 async function writeJsonFileAtomicAsync(filePath, payload) {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
-  const tempPath = `${filePath}.tmp`;
+  const tempPath = atomicTempPath(filePath);
   try {
     await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
     await fs.promises.writeFile(tempPath, body, 'utf8');
     await fs.promises.rename(tempPath, filePath);
   } catch (error) {
-    if (error?.code === 'EBUSY' || error?.code === 'EXDEV') {
-      try {
-        await fs.promises.writeFile(filePath, body, 'utf8');
-        await fs.promises.unlink(tempPath).catch(() => {});
-        return;
-      } catch (fallbackError) {
-        logger.warn(`[storage] failed to write ${filePath}: ${fallbackError.message}`);
-      }
-    } else {
-      logger.warn(`[storage] failed to write ${filePath}: ${error.message}`);
-    }
+    logger.warn(`[storage] failed to write ${filePath}: ${error.message}`);
     await fs.promises.unlink(tempPath).catch(() => {});
   }
 }
@@ -1014,7 +1042,16 @@ function resultsFilePayload() {
 
 function writeResultsFile() {
   const payload = resultsFilePayload();
+  const activeQueue = asyncFileWriteQueues.get(RESULTS_FILE_PATH);
+  if (activeQueue?.running) {
+    return queueJsonFileWrite(RESULTS_FILE_PATH, payload);
+  }
+
+  // A synchronous flush is safe only while the serialized async queue is
+  // idle. When it is active, queueJsonFileWrite coalesces this newer snapshot
+  // behind the in-flight rename so an older payload cannot win the race.
   writeJsonFileAtomic(RESULTS_FILE_PATH, payload);
+  return Promise.resolve();
 }
 
 function scheduleResultsWrite() {
@@ -1050,8 +1087,9 @@ function flushScheduledWrites() {
   writeObserverNamesFile();
   writeObserverActivityFile();
   if (!DISABLE_RESULTS_FILE_WRITES) {
-    writeResultsFile();
+    return writeResultsFile();
   }
+  return Promise.resolve();
 }
 
 async function flushScheduledWritesAsync() {
@@ -1066,7 +1104,7 @@ async function flushScheduledWritesAsync() {
     );
   }
   if (!DISABLE_RESULTS_FILE_WRITES) {
-    writes.push(writeJsonFileAtomicAsync(RESULTS_FILE_PATH, resultsFilePayload()));
+    writes.push(writeResultsFile());
   }
   await Promise.all(writes);
 }
@@ -1505,30 +1543,39 @@ function pruneRateLimitBuckets(now = Date.now()) {
   return removed;
 }
 
+function consumeRateLimitBucket(key, maxRequests, windowMs, now = Date.now()) {
+  pruneRateLimitBuckets(now);
+  const existing = rateLimitBuckets.get(key);
+  if (!existing || existing.resetAt <= now) {
+    rateLimitBuckets.set(key, {
+      count: 1,
+      resetAt: now + windowMs,
+    });
+    return { allowed: true, retryAfter: 0 };
+  }
+
+  existing.count += 1;
+  if (existing.count <= maxRequests) {
+    return { allowed: true, retryAfter: 0 };
+  }
+
+  return {
+    allowed: false,
+    retryAfter: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+  };
+}
+
 function rateLimit(namespace, maxRequests, windowMs) {
   return (request, response, next) => {
     const key = `${namespace}:${clientAddress(request)}`;
-    const now = Date.now();
-    pruneRateLimitBuckets(now);
-    const existing = rateLimitBuckets.get(key);
-    if (!existing || existing.resetAt <= now) {
-      rateLimitBuckets.set(key, {
-        count: 1,
-        resetAt: now + windowMs,
-      });
+    const result = consumeRateLimitBucket(key, maxRequests, windowMs);
+    if (result.allowed) {
       next();
       return;
     }
 
-    existing.count += 1;
-    if (existing.count <= maxRequests) {
-      next();
-      return;
-    }
-
-    const retryAfter = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
-    response.setHeader('Retry-After', String(retryAfter));
-    response.status(429).json({ error: 'rate_limited', retryAfter });
+    response.setHeader('Retry-After', String(result.retryAfter));
+    response.status(429).json({ error: 'rate_limited', retryAfter: result.retryAfter });
   };
 }
 
@@ -3166,13 +3213,112 @@ app.get(/.*/, (request, response) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  maxPayload: MAX_WS_MESSAGE_BYTES,
+});
+const webSocketConnectionsByIp = new Map();
+const expressRequestIpGetter = Object.getOwnPropertyDescriptor(express.request, 'ip')?.get;
 
 let mqttClient = null;
 let mqttConnected = false;
 let lastSnapshotSentAt = 0;
 let pruneInterval = null;
 let wsHeartbeatTimer = null;
+let webSocketConnectionSlots = 0;
+
+function webSocketClientAddress(request) {
+  if (expressRequestIpGetter) {
+    const hadOwnApp = Object.prototype.hasOwnProperty.call(request, 'app');
+    const previousApp = request.app;
+    try {
+      request.app = app;
+      const trustedAddress = expressRequestIpGetter.call(request);
+      if (trustedAddress) {
+        return String(trustedAddress);
+      }
+    } catch (error) {
+      logger.debug(`[websocket] client address resolution failed: ${error.message || error}`);
+    } finally {
+      if (hadOwnApp) {
+        request.app = previousApp;
+      } else {
+        delete request.app;
+      }
+    }
+  }
+  return String(request.socket?.remoteAddress || 'unknown');
+}
+
+function webSocketOriginAllowed(request) {
+  if (!WS_ORIGIN_CHECK_ENABLED) {
+    return true;
+  }
+
+  const rawOrigin = String(request.headers?.origin || '').trim();
+  if (!rawOrigin) {
+    return WS_ALLOW_MISSING_ORIGIN;
+  }
+
+  const origin = normalizeWebSocketOrigin(rawOrigin);
+  if (!origin) {
+    return false;
+  }
+  if (WS_ALLOWED_ORIGINS.includes('*') || WS_ALLOWED_ORIGINS.includes(origin)) {
+    return true;
+  }
+
+  const siteOrigin = normalizeWebSocketOrigin(SITE_URL);
+  if (siteOrigin && origin === siteOrigin) {
+    return true;
+  }
+
+  const requestHost = String(request.headers?.host || '').trim().toLowerCase();
+  try {
+    return Boolean(requestHost) && new URL(origin).host.toLowerCase() === requestHost;
+  } catch {
+    return false;
+  }
+}
+
+function reserveWebSocketConnection(clientIp) {
+  if (webSocketConnectionSlots >= MAX_WS_CONNECTIONS) {
+    return { allowed: false, reason: 'global connection cap' };
+  }
+  const ipConnections = webSocketConnectionsByIp.get(clientIp) || 0;
+  if (ipConnections >= MAX_WS_CONNECTIONS_PER_IP) {
+    return { allowed: false, reason: 'per-IP connection cap' };
+  }
+  webSocketConnectionSlots += 1;
+  webSocketConnectionsByIp.set(clientIp, ipConnections + 1);
+  return { allowed: true, reason: '' };
+}
+
+function releaseWebSocketConnection(clientIp) {
+  webSocketConnectionSlots = Math.max(0, webSocketConnectionSlots - 1);
+  const nextCount = Math.max(0, (webSocketConnectionsByIp.get(clientIp) || 0) - 1);
+  if (nextCount === 0) {
+    webSocketConnectionsByIp.delete(clientIp);
+  } else {
+    webSocketConnectionsByIp.set(clientIp, nextCount);
+  }
+}
+
+function rejectWebSocketUpgrade(socket, statusCode, statusText, retryAfter = 0) {
+  const retryHeader = retryAfter > 0 ? `Retry-After: ${retryAfter}\r\n` : '';
+  try {
+    socket.write(
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n`
+      + 'Connection: close\r\n'
+      + retryHeader
+      + 'Content-Length: 0\r\n\r\n',
+    );
+  } catch (error) {
+    logger.debug(`[websocket] failed to send rejection response: ${error.message || error}`);
+  } finally {
+    socket.destroy();
+  }
+}
 
 function sendWebSocketPayload(payload) {
   for (const client of wss.clients) {
@@ -3213,26 +3359,86 @@ function broadcastSessionUpdate(sessionId) {
   sendWebSocketPayload(payload);
 }
 
-wss.on('connection', (socket) => {
+wss.on('connection', (socket, request) => {
+  const clientIp = socket.clientIp || webSocketClientAddress(request);
   socket.isAlive = true;
   socket.on('pong', () => {
     socket.isAlive = true;
   });
-  socket.send(JSON.stringify({
-    type: 'snapshot',
-    data: snapshotPayload(),
-  }));
+  socket.on('error', (error) => {
+    logger.warn(`[websocket] closing ${clientIp}: ${error.message || error}`);
+  });
+  socket.on('message', () => {
+    const result = consumeRateLimitBucket(
+      `ws-message:${clientIp}`,
+      WS_MESSAGE_RATE_MAX,
+      WS_MESSAGE_RATE_WINDOW_MS,
+    );
+    if (!result.allowed) {
+      logger.warn(`[websocket] message rate exceeded for ${clientIp}; closing excess client`);
+      socket.close(1008, 'Message rate limit exceeded');
+      return;
+    }
+    // The application WebSocket is broadcast-only. Client frames are never
+    // parsed or dispatched, so unauthenticated connections cannot mutate app
+    // state while legacy clients remain handshake-compatible.
+  });
+  try {
+    socket.send(JSON.stringify({
+      type: 'snapshot',
+      data: snapshotPayload(),
+    }));
+  } catch (error) {
+    logger.debug(`[websocket] initial send failed: ${error.message || error}`);
+    socket.terminate();
+  }
 });
 
 server.on('upgrade', (request, socket, head) => {
-  if (wss.clients.size >= MAX_WS_CONNECTIONS) {
-    socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
-    socket.destroy();
+  const clientIp = webSocketClientAddress(request);
+  const rateResult = consumeRateLimitBucket(
+    `ws-connect:${clientIp}`,
+    WS_CONNECTION_RATE_MAX,
+    WS_CONNECTION_RATE_WINDOW_MS,
+  );
+  if (!rateResult.allowed) {
+    logger.warn(`[websocket] connection rate exceeded for ${clientIp}; rejecting excess client`);
+    rejectWebSocketUpgrade(socket, 429, 'Too Many Requests', rateResult.retryAfter);
     return;
   }
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
+  if (!webSocketOriginAllowed(request)) {
+    logger.warn(`[websocket] rejected disallowed origin from ${clientIp}`);
+    rejectWebSocketUpgrade(socket, 403, 'Forbidden');
+    return;
+  }
+
+  const reservation = reserveWebSocketConnection(clientIp);
+  if (!reservation.allowed) {
+    logger.warn(`[websocket] ${reservation.reason} reached; rejecting excess client ${clientIp}`);
+    rejectWebSocketUpgrade(socket, 503, 'Service Unavailable');
+    return;
+  }
+
+  let released = false;
+  const releaseReservation = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    releaseWebSocketConnection(clientIp);
+  };
+  socket.once('close', releaseReservation);
+
+  try {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      ws.clientIp = clientIp;
+      wss.emit('connection', ws, request);
+    });
+  } catch (error) {
+    releaseReservation();
+    logger.warn(`[websocket] upgrade failed for ${clientIp}: ${error.message || error}`);
+    socket.destroy();
+  }
 });
 
 function startWebSocketHeartbeat() {

@@ -48,7 +48,7 @@ beforeEach(() => {
 });
 
 after(async () => {
-  flushScheduledWrites();
+  await flushScheduledWrites();
   await new Promise((resolve, reject) => {
     server.close((error) => {
       if (error) {

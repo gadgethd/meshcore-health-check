@@ -51,6 +51,8 @@ cp .env.example .env
 - keep `TRUST_PROXY=1` behind one trusted reverse proxy, or set it to `false`
   when exposing the app directly
 - enable Turnstile if the site is internet-facing
+- keep `WS_ALLOW_MISSING_ORIGIN=true` for existing observer devices/scripts;
+  tune WebSocket limits only if measured traffic requires it
 - leave `LOG_LEVEL=info` unless actively troubleshooting
 
 See [ENVIRONMENT.md](ENVIRONMENT.md) for the full variable reference.

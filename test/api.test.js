@@ -98,7 +98,7 @@ beforeEach(() => {
 });
 
 after(async () => {
-  flushScheduledWrites();
+  await flushScheduledWrites();
   await new Promise((resolve, reject) => {
     server.close((error) => {
       if (error) {
@@ -245,6 +245,92 @@ test('created sessions are persisted in the results file', async () => {
   const session = stored.sessions.find((entry) => entry.id === created.id);
   assert.equal(session?.code, created.code);
   assert.equal(session?.status, 'waiting');
+});
+
+test('rapid session updates leave one complete atomic results document', async () => {
+  const createResponses = await Promise.all(
+    Array.from({ length: 12 }, () => fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })),
+  );
+  assert.equal(createResponses.every((response) => response.status === 201), true);
+  const created = await Promise.all(createResponses.map((response) => response.json()));
+
+  await flushScheduledWrites();
+
+  const stored = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+  assert.equal(stored.version, 1);
+  assert.deepEqual(
+    new Set(stored.sessions.map((session) => session.id)),
+    new Set(created.map((session) => session.id)),
+  );
+  assert.deepEqual(
+    fs.readdirSync(tempDir).filter((name) => name.startsWith('session-results.json.') && name.endsWith('.tmp')),
+    [],
+  );
+});
+
+test('a newer results flush waits behind an in-flight atomic rename', async () => {
+  const originalRename = fs.promises.rename;
+  let releaseFirstRename = null;
+  let signalFirstRename = null;
+  let heldFirstRename = false;
+  const firstRenameStarted = new Promise((resolve) => {
+    signalFirstRename = resolve;
+  });
+  const firstRenameGate = new Promise((resolve) => {
+    releaseFirstRename = resolve;
+  });
+
+  fs.promises.rename = async (sourcePath, targetPath) => {
+    if (targetPath === resultsFile && !heldFirstRename) {
+      heldFirstRename = true;
+      signalFirstRename();
+      await firstRenameGate;
+    }
+    return originalRename(sourcePath, targetPath);
+  };
+
+  try {
+    const firstResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(firstResponse.status, 201);
+    const firstSession = await firstResponse.json();
+
+    await Promise.race([
+      firstRenameStarted,
+      new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('scheduled results rename did not start')), 2000);
+      }),
+    ]);
+
+    const secondResponse = await fetch(`${baseUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(secondResponse.status, 201);
+    const secondSession = await secondResponse.json();
+
+    const flushPromise = flushScheduledWrites();
+    releaseFirstRename();
+    await flushPromise;
+
+    const stored = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+    assert.deepEqual(
+      new Set(stored.sessions.map((session) => session.id)),
+      new Set([firstSession.id, secondSession.id]),
+    );
+  } finally {
+    releaseFirstRename();
+    fs.promises.rename = originalRename;
+    await flushScheduledWrites();
+  }
 });
 
 test('POST /api/verify-turnstile returns disabled when turnstile is off', async () => {
@@ -675,7 +761,7 @@ test('packet activity is persisted for dynamic observer ranking', async () => {
     `meshcore/BOS/${observerKey}/packets`,
     Buffer.from(JSON.stringify(envelope)),
   );
-  flushScheduledWrites();
+  await flushScheduledWrites();
 
   const stored = JSON.parse(fs.readFileSync(observerActivityFile, 'utf8'));
   const dayKey = new Date().toISOString().slice(0, 10);

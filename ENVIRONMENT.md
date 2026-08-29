@@ -83,11 +83,24 @@ The backend keeps packet handling scoped to the configured test channel.
 | `OBSERVER_ACTIVITY_RETENTION_DAYS` | `30` | Durable observer activity history window. |
 | `MAX_OBSERVER_ENTRIES` | `10000` | Maximum runtime/profile observer entries before oldest unpinned entries are evicted. |
 | `MAX_WS_CONNECTIONS` | `512` | Maximum simultaneous WebSocket clients. |
+| `MAX_WS_CONNECTIONS_PER_IP` | `128` | Maximum simultaneous WebSocket clients per trusted client IP; excess connections alone are rejected. |
+| `MAX_WS_MESSAGE_BYTES` | `1048576` | Maximum inbound WebSocket frame/message payload; an oversized sender alone is closed. |
 | `MAX_WS_BUFFERED_BYTES` | `1048576` | Disconnect slow WebSocket clients above this queued-byte threshold. |
+| `WS_CONNECTION_RATE_WINDOW_SECONDS` | `60` | Per-IP WebSocket connection-attempt rate window. |
+| `WS_CONNECTION_RATE_MAX` | `6000` | Connection attempts allowed per IP and rate window. |
+| `WS_MESSAGE_RATE_WINDOW_SECONDS` | `60` | Per-IP inbound WebSocket message rate window. |
+| `WS_MESSAGE_RATE_MAX` | `12000` | Inbound messages allowed per IP and rate window. Client frames remain non-mutating and are ignored. |
+| `WS_ORIGIN_CHECK_ENABLED` | `true` | Check browser-supplied WebSocket origins against the request host, `SITE_URL`, and `WS_ALLOWED_ORIGINS`. |
+| `WS_ALLOW_MISSING_ORIGIN` | `true` | Allow legacy non-browser clients that omit the `Origin` header. |
+| `WS_ALLOWED_ORIGINS` | blank | Optional comma-separated additional HTTP(S) origins; `*` allows any supplied origin. |
 | `WS_HEARTBEAT_INTERVAL_MS` | `30000` | WebSocket heartbeat and dead-client cleanup interval. |
 
 `OBSERVER_HASH_DISPLAY_BYTES` only changes display labels. It does not restrict
 which packets or path-hop sizes the app accepts.
+
+WebSocket limits do not change the endpoint, path, query parameters, or
+handshake credentials. Missing `Origin` remains allowed by default for legacy
+observer devices and scripts, and no User-Agent header is required.
 
 Packet path distances are estimates based on observer coordinates and path-hop
 hashes that can be matched back to known observers. Unknown or ambiguous hops

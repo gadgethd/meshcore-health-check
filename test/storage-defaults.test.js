@@ -105,7 +105,7 @@ test('observer retention defaults to disabled when unset', async () => {
     const payload = await response.json();
     assert.equal(payload.observerStats.retentionSeconds, 0);
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
