@@ -117,7 +117,7 @@ test('GET /api/bootstrap returns site and channel configuration', async () => {
 
   const payload = await response.json();
   assert.equal(payload.site.title, 'MeshCore Observer Coverage');
-  assert.equal(payload.site.version, '1.3.7');
+  assert.equal(payload.site.version, '1.3.8');
   assert.equal(payload.site.coreScopeUrl, 'https://analyzer.example.test');
   assert.equal(payload.site.externalLinkUrl, '');
   assert.equal(payload.testChannel.name, 'health-check');
@@ -138,6 +138,10 @@ test('GET /app includes server-rendered social meta tags', async () => {
   assert.match(html, /<meta property="og:title" content="MeshCore Observer Coverage">/);
   assert.match(html, /<meta property="og:image" content="http:\/\/127\.0\.0\.1:\d+\/logo\.png">/);
   assert.match(html, /<meta name="twitter:title" content="MeshCore Observer Coverage">/);
+  assert.match(html, /src="\/app\.js\?v=1\.3\.8"/);
+  assert.match(html, /href="\/styles\.css\?v=1\.3\.8"/);
+  assert.match(response.headers.get('content-security-policy'), /img-src 'self' data:;/);
+  assert.equal(response.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
 });
 
 test('GET /manifest.webmanifest returns installable app metadata', async () => {
@@ -162,6 +166,24 @@ test('GET /share/:sessionId returns the dashboard shell', async () => {
   assert.equal(response.headers.get('cache-control'), 'no-store');
   assert.match(html, /Observer coverage someone shared with you\./);
   assert.match(html, /Run Your Own Check/);
+  assert.match(html, /src="\/app\.js\?v=1\.3\.8"/);
+});
+
+test('invalid tile URLs return an uncached 404 instead of the dashboard shell', async () => {
+  const response = await fetch(`${baseUrl}/tiles/osm/20/0/0.png`);
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal(await response.text(), '');
+});
+
+test('tile requests remain rate limited even for invalid coordinates', async () => {
+  for (let count = 0; count < 600; count += 1) {
+    const response = await fetch(`${baseUrl}/tiles/invalid`);
+    assert.equal(response.status, 404);
+  }
+  const limited = await fetch(`${baseUrl}/tiles/invalid`);
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get('cache-control'), 'no-store');
 });
 
 test('POST /api/sessions creates a session and GET returns it', async () => {

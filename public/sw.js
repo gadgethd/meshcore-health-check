@@ -1,11 +1,11 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v3';
+const CACHE_NAME = 'mesh-health-check-pwa-v4';
 const CORE_ASSETS = [
   '/',
   '/app',
   '/manifest.webmanifest',
   '/design-tokens.css',
-  '/styles.css',
-  '/app.js',
+  '/styles.css?v=1.3.8',
+  '/app.js?v=1.3.8',
   '/landing.css',
   '/turnstile-landing.js',
   '/logo.png',
@@ -60,6 +60,11 @@ self.addEventListener('fetch', (event) => {
   }
   const url = new URL(event.request.url);
   if (url.origin !== self.location.origin) {
+    return;
+  }
+  // Let the HTTP cache honor tile expiry and validators. Do not force a
+  // no-store fetch or retain tiles indefinitely in the PWA asset cache.
+  if (url.pathname.startsWith('/tiles/')) {
     return;
   }
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/share/')) {

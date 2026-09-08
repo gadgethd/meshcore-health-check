@@ -1376,16 +1376,10 @@ function currentTileLayer() {
   if (!window.L) {
     return null;
   }
-  if (state.uiTheme === 'light') {
-    return window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors',
-    });
-  }
-  return window.L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  return window.L.tileLayer('/tiles/osm/{z}/{x}/{y}.png', {
     maxZoom: 19,
-    subdomains: 'abcd',
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
+    className: state.uiTheme === 'dark' ? 'observer-basemap-dark' : 'observer-basemap-light',
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
   });
 }
 

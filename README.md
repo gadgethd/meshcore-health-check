@@ -118,3 +118,10 @@ build loading cleanly on Node 18.
    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=yellowcooln/meshcore-health-check&type=date&legend=top-left" />
  </picture>
 </a>
+
+## Map delivery
+
+Dashboard and share maps use keyless OpenStreetMap tiles through the app's
+cached `/tiles/osm/` endpoint, with dark and light themes and linked
+attribution. The server identifies requests using `SITE_URL`; no map key
+is sent to the browser. See [map operation details](HOWTO.md#map-tiles).

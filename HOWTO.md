@@ -111,6 +111,42 @@ Image tags:
   `dev`.
 - Release tags and short-SHA tags are also published by the Docker workflow.
 
+## Map Tiles
+
+Both dashboard and shared-result maps request `/tiles/osm/{z}/{x}/{y}.png`
+from this app. The server fetches standard OpenStreetMap tiles over HTTPS
+with a `MeshHealthCheck/<version>` User-Agent and the site origin as Referer.
+Set the existing `SITE_URL` to your public HTTPS origin for stable
+identification. No provider account, map API key, or new environment variable
+is needed. Dark mode filters the basemap; markers and attribution retain
+their own colors. CARTO is no longer used.
+
+The app keeps a bounded in-memory cache (64 MiB, up to 2048 tiles), honors
+upstream cache headers, and conditionally revalidates expired tiles using
+ETag/Last-Modified. It limits upstream downloads to 8 at once, 64 pending
+tiles, 512 KiB per image, and 10 seconds per download. The existing IP limiter
+allows 600 tile requests per minute. Cache contents reset on an app restart;
+browser HTTP caching continues across reloads. The PWA does not store tiles
+in Cache Storage or prefetch them for offline use.
+
+Keep the visible OpenStreetMap attribution and follow the
+[OSM tile policy](https://operations.osmfoundation.org/policies/tiles/).
+The community tile service offers best-effort availability; monitor usage
+and choose a separately provisioned provider for heavier traffic.
+
+After a deployment, check a real tile body as well as its status:
+
+```bash
+curl -sS -D /tmp/healthcheck-tile.headers \
+  http://localhost:3090/tiles/osm/10/511/340.png \
+  -o /tmp/healthcheck-tile.png
+```
+
+Expect HTTP 200 and `Content-Type: image/png`, then open the PNG to confirm
+it is a map. Some providers return error watermarks as HTTP 200 PNGs.
+Check both themes on `/app` and a retained `/share/:sessionId` link. The
+versioned app/style URLs and updated `/sw.js` migrate existing PWA clients.
+
 ## User Flow
 
 1. The user opens the site.
