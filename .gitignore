@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.*
+!.env.example
 .env.local
 .env.*.local
 observer.json
@@ -11,12 +13,14 @@ session-results.json.tmp
 data/*.json
 data/*.tmp
 !data/.gitkeep
+.data/
 public/logo.png
 
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
 
 .DS_Store
 Thumbs.db
@@ -26,9 +30,14 @@ Thumbs.db
 
 coverage/
 dist/
+build/
 tmp/
 playwright-report/
 test-results/
+*.key
+*.pem
+backup-*/
+*.sql
 *.swp
 *.swo
 *.tmp

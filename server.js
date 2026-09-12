@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 
 import express from 'express';
 import mqtt from 'mqtt';
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 import { createTileRouter } from './lib/tile-proxy.js';
 import {
   calculateChannelHash,
@@ -33,6 +33,7 @@ const {
   MeshCorePacketDecoder,
   PayloadType: MeshCorePayloadType,
 } = require('@michaelhart/meshcore-decoder');
+const proxyaddr = require('proxy-addr');
 const APP_VERSION = String(require('./package.json').version || '').trim() || '0.0.0';
 const IS_MAIN_MODULE = process.argv[1]
   ? path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
@@ -143,6 +144,30 @@ function normalizeSiteUrl(value) {
   } catch {
     return '';
   }
+}
+
+function normalizeHttpOrigin(value) {
+  const raw = String(value || '').trim();
+  if (!raw) {
+    return '';
+  }
+  try {
+    const parsed = new URL(raw);
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      return '';
+    }
+    return parsed.origin;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeWebSocketPath(value) {
+  const candidate = ensureLeadingSlash(String(value || '/').trim());
+  if (candidate.startsWith('//') || /[?#\r\n]/.test(candidate)) {
+    return '/';
+  }
+  return candidate;
 }
 
 function normalizeDistanceUnit(value) {
@@ -370,7 +395,7 @@ const TURNSTILE_TOKEN_TTL_SECONDS = Math.max(
   300,
   envNumber('TURNSTILE_TOKEN_TTL_SECONDS', 86400),
 );
-const TURNSTILE_BOT_BYPASS = envBool('TURNSTILE_BOT_BYPASS', true);
+const TURNSTILE_BOT_BYPASS = envBool('TURNSTILE_BOT_BYPASS', false);
 const TURNSTILE_BOT_ALLOWLIST = dedupe(
   (
     envValue(
@@ -398,6 +423,55 @@ const SESSION_RATE_MAX = Math.max(
   1,
   envNumber('SESSION_RATE_MAX', 30),
 );
+const RATE_LIMIT_BUCKET_MAX = Math.max(
+  100,
+  Math.round(envNumber('RATE_LIMIT_BUCKET_MAX', 10000)),
+);
+const WEBSOCKET_PATH = normalizeWebSocketPath(envValue('WEBSOCKET_PATH', '/'));
+const WEBSOCKET_ALLOWED_ORIGINS = dedupe(
+  [
+    ...envList('WEBSOCKET_ALLOWED_ORIGINS'),
+    SITE_URL,
+  ]
+    .map(normalizeHttpOrigin)
+    .filter(Boolean),
+);
+const WEBSOCKET_TOKEN_COOKIE_NAME = envValue(
+  'WEBSOCKET_TOKEN_COOKIE_NAME',
+  `${TURNSTILE_COOKIE_NAME}_ws`,
+);
+const WEBSOCKET_TOKEN_TTL_SECONDS = Math.max(
+  10,
+  Math.min(300, Math.round(envNumber('WEBSOCKET_TOKEN_TTL_SECONDS', 60))),
+);
+const WEBSOCKET_GLOBAL_CAP = Math.max(
+  1,
+  Math.round(envNumber('WEBSOCKET_GLOBAL_CAP', 200)),
+);
+const WEBSOCKET_PER_IP_CAP = Math.max(
+  1,
+  Math.min(
+    WEBSOCKET_GLOBAL_CAP,
+    Math.round(envNumber('WEBSOCKET_PER_IP_CAP', 5)),
+  ),
+);
+const WEBSOCKET_MAX_PAYLOAD_BYTES = Math.max(
+  1024,
+  Math.round(envNumber('WEBSOCKET_MAX_PAYLOAD_BYTES', 16384)),
+);
+const WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES = Math.max(
+  WEBSOCKET_MAX_PAYLOAD_BYTES,
+  Math.round(envNumber('WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES', 1048576)),
+);
+const WEBSOCKET_HEARTBEAT_INTERVAL_MS = Math.max(
+  5,
+  Math.round(envNumber('WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS', 30)),
+) * 1000;
+const WEBSOCKET_IDLE_TIMEOUT_MS = Math.max(
+  WEBSOCKET_HEARTBEAT_INTERVAL_MS * 2,
+  Math.round(envNumber('WEBSOCKET_IDLE_TIMEOUT_SECONDS', 90)) * 1000,
+);
+const WEBSOCKET_TOKEN_MAX = Math.max(100, WEBSOCKET_GLOBAL_CAP * 4);
 const OBSERVER_ACTIVE_WINDOW_MS = Math.max(
   60,
   envNumber('OBSERVER_ACTIVE_WINDOW_SECONDS', 900),
@@ -720,6 +794,8 @@ const sessions = new Map();
 const messageToSession = new Map();
 const rateLimitBuckets = new Map();
 const turnstileAuthTokens = new Map();
+const webSocketAuthTokens = new Map();
+const webSocketConnectionsByIp = new Map();
 let observerNamesWriteTimer = null;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
@@ -1346,12 +1422,18 @@ function renderHtmlTemplate(template, request, pageTitleSuffix = '') {
 }
 
 function clientAddress(requestLike) {
-  return (
-    requestLike.ip ||
-    requestLike.socket?.remoteAddress ||
-    requestLike.connection?.remoteAddress ||
-    'unknown'
-  );
+  if (requestLike.ip) {
+    return requestLike.ip;
+  }
+  try {
+    return proxyaddr(requestLike, app.get('trust proxy fn'));
+  } catch {
+    return (
+      requestLike.socket?.remoteAddress ||
+      requestLike.connection?.remoteAddress ||
+      'unknown'
+    );
+  }
 }
 
 function isAllowlistedTurnstileBot(requestLike) {
@@ -1365,12 +1447,35 @@ function isAllowlistedTurnstileBot(requestLike) {
   return TURNSTILE_BOT_ALLOWLIST.some((token) => token && userAgent.includes(token));
 }
 
+function pruneRateLimitBuckets(now = Date.now(), maximumSize = RATE_LIMIT_BUCKET_MAX) {
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (!bucket || bucket.resetAt <= now) {
+      rateLimitBuckets.delete(key);
+    }
+  }
+
+  const overflow = rateLimitBuckets.size - Math.max(0, maximumSize);
+  if (overflow <= 0) {
+    return;
+  }
+  const oldestKeys = [...rateLimitBuckets.entries()]
+    .sort((left, right) => left[1].resetAt - right[1].resetAt)
+    .slice(0, overflow)
+    .map(([key]) => key);
+  for (const key of oldestKeys) {
+    rateLimitBuckets.delete(key);
+  }
+}
+
 function rateLimit(namespace, maxRequests, windowMs) {
   return (request, response, next) => {
     const key = `${namespace}:${clientAddress(request)}`;
     const now = Date.now();
     const existing = rateLimitBuckets.get(key);
     if (!existing || existing.resetAt <= now) {
+      if (!existing && rateLimitBuckets.size >= RATE_LIMIT_BUCKET_MAX) {
+        pruneRateLimitBuckets(now, RATE_LIMIT_BUCKET_MAX - 1);
+      }
       rateLimitBuckets.set(key, {
         count: 1,
         resetAt: now + windowMs,
@@ -1398,12 +1503,18 @@ function turnstileCookieIsSecure(request) {
   return String(request.headers?.['x-forwarded-proto'] || '').toLowerCase() === 'https';
 }
 
-function buildTurnstileCookieHeader(request, value, maxAgeSeconds) {
+function buildCookieHeader(
+  request,
+  name,
+  value,
+  maxAgeSeconds,
+  { cookiePath = '/', sameSite = 'Lax' } = {},
+) {
   const attributes = [
-    `${TURNSTILE_COOKIE_NAME}=${encodeURIComponent(value)}`,
+    `${name}=${encodeURIComponent(value)}`,
     'HttpOnly',
-    'Path=/',
-    'SameSite=Lax',
+    `Path=${cookiePath}`,
+    `SameSite=${sameSite}`,
     `Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`,
   ];
   if (turnstileCookieIsSecure(request)) {
@@ -1412,11 +1523,24 @@ function buildTurnstileCookieHeader(request, value, maxAgeSeconds) {
   return attributes.join('; ');
 }
 
-function setTurnstileCookie(request, response, authToken) {
+function appendSetCookieHeader(response, cookieHeader) {
+  const existing = response.getHeader('Set-Cookie');
+  if (!existing) {
+    response.setHeader('Set-Cookie', cookieHeader);
+    return;
+  }
   response.setHeader(
     'Set-Cookie',
-    buildTurnstileCookieHeader(
+    Array.isArray(existing) ? [...existing, cookieHeader] : [existing, cookieHeader],
+  );
+}
+
+function setTurnstileCookie(request, response, authToken) {
+  appendSetCookieHeader(
+    response,
+    buildCookieHeader(
       request,
+      TURNSTILE_COOKIE_NAME,
       authToken,
       TURNSTILE_TOKEN_TTL_SECONDS,
     ),
@@ -1424,9 +1548,9 @@ function setTurnstileCookie(request, response, authToken) {
 }
 
 function clearTurnstileCookie(request, response) {
-  response.setHeader(
-    'Set-Cookie',
-    buildTurnstileCookieHeader(request, '', 0),
+  appendSetCookieHeader(
+    response,
+    buildCookieHeader(request, TURNSTILE_COOKIE_NAME, '', 0),
   );
 }
 
@@ -1454,11 +1578,8 @@ function extractTurnstileAuthToken(requestLike) {
   return String(cookies[TURNSTILE_COOKIE_NAME] || '').trim();
 }
 
-function hasTurnstileAccess(requestLike) {
+function hasApiAccess(requestLike) {
   if (!TURNSTILE_ENABLED) {
-    return true;
-  }
-  if (isAllowlistedTurnstileBot(requestLike)) {
     return true;
   }
   cleanupExpiredTurnstileTokens();
@@ -1469,6 +1590,99 @@ function hasTurnstileAccess(requestLike) {
   const expiresAt = turnstileAuthTokens.get(authToken);
   if (!expiresAt || expiresAt <= Date.now()) {
     turnstileAuthTokens.delete(authToken);
+    return false;
+  }
+  return true;
+}
+
+function hasPreviewAccess(requestLike) {
+  return hasApiAccess(requestLike) || isAllowlistedTurnstileBot(requestLike);
+}
+
+function pruneWebSocketAuthTokens(now = Date.now(), maximumSize = WEBSOCKET_TOKEN_MAX) {
+  for (const [token, record] of webSocketAuthTokens.entries()) {
+    if (!record || record.expiresAt <= now) {
+      webSocketAuthTokens.delete(token);
+    }
+  }
+
+  const overflow = webSocketAuthTokens.size - Math.max(0, maximumSize);
+  if (overflow <= 0) {
+    return;
+  }
+  const oldestTokens = [...webSocketAuthTokens.entries()]
+    .sort((left, right) => left[1].expiresAt - right[1].expiresAt)
+    .slice(0, overflow)
+    .map(([token]) => token);
+  for (const token of oldestTokens) {
+    webSocketAuthTokens.delete(token);
+  }
+}
+
+function extractWebSocketAuthToken(requestLike) {
+  const cookies = parseCookies(requestLike.headers?.cookie || '');
+  return String(cookies[WEBSOCKET_TOKEN_COOKIE_NAME] || '').trim();
+}
+
+function ensureWebSocketAuthToken(
+  request,
+  response,
+  apiAccessGranted = hasApiAccess(request),
+) {
+  if (!apiAccessGranted) {
+    return false;
+  }
+
+  const now = Date.now();
+  const address = clientAddress(request);
+  pruneWebSocketAuthTokens(now);
+  const existingToken = extractWebSocketAuthToken(request);
+  const existing = webSocketAuthTokens.get(existingToken);
+  const refreshWindowMs = Math.min(
+    10000,
+    Math.floor((WEBSOCKET_TOKEN_TTL_SECONDS * 1000) / 2),
+  );
+  if (
+    existing &&
+    existing.address === address &&
+    existing.expiresAt > now + refreshWindowMs
+  ) {
+    return true;
+  }
+
+  if (webSocketAuthTokens.size >= WEBSOCKET_TOKEN_MAX) {
+    pruneWebSocketAuthTokens(now, WEBSOCKET_TOKEN_MAX - 1);
+  }
+  const token = randomBytes(24).toString('base64url');
+  webSocketAuthTokens.set(token, {
+    address,
+    expiresAt: now + (WEBSOCKET_TOKEN_TTL_SECONDS * 1000),
+  });
+  appendSetCookieHeader(
+    response,
+    buildCookieHeader(
+      request,
+      WEBSOCKET_TOKEN_COOKIE_NAME,
+      token,
+      WEBSOCKET_TOKEN_TTL_SECONDS,
+      { cookiePath: WEBSOCKET_PATH, sameSite: 'Strict' },
+    ),
+  );
+  return true;
+}
+
+function hasWebSocketAccess(requestLike) {
+  if (!hasApiAccess(requestLike)) {
+    return false;
+  }
+  const now = Date.now();
+  pruneWebSocketAuthTokens(now);
+  const token = extractWebSocketAuthToken(requestLike);
+  const record = webSocketAuthTokens.get(token);
+  if (!record || record.expiresAt <= now) {
+    return false;
+  }
+  if (record.address !== clientAddress(requestLike)) {
     return false;
   }
   return true;
@@ -2405,7 +2619,7 @@ function serializeBootstrap(request) {
     turnstile: {
       enabled: TURNSTILE_ENABLED,
       siteKey: TURNSTILE_ENABLED ? TURNSTILE_SITE_KEY : '',
-      verified: hasTurnstileAccess(request),
+      verified: hasApiAccess(request),
     },
   };
 }
@@ -2661,6 +2875,8 @@ function pruneState() {
   let changed = false;
 
   cleanupExpiredTurnstileTokens();
+  pruneWebSocketAuthTokens(now);
+  pruneRateLimitBuckets(now);
 
   for (const session of sessions.values()) {
     if (session.status !== 'expired' && now >= session.expiresAt) {
@@ -2934,6 +3150,7 @@ app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leafl
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 
 app.get('/api/bootstrap', (request, response) => {
+  ensureWebSocketAuthToken(request, response);
   response.json(serializeBootstrap(request));
 });
 
@@ -2964,6 +3181,7 @@ app.post(
 
     const authToken = issueTurnstileAuthToken();
     setTurnstileCookie(request, response, authToken);
+    ensureWebSocketAuthToken(request, response, true);
     response.json({ success: true });
   },
 );
@@ -2972,7 +3190,7 @@ app.post(
   '/api/sessions',
   rateLimit('session-create', SESSION_RATE_MAX, SESSION_RATE_WINDOW_MS),
   (request, response) => {
-    if (!hasTurnstileAccess(request)) {
+    if (!hasApiAccess(request)) {
       response.status(403).json({ error: 'turnstile_required' });
       return;
     }
@@ -3018,6 +3236,7 @@ app.get('/api/sessions/:sessionId', (request, response) => {
 });
 
 function sendApp(request, response) {
+  ensureWebSocketAuthToken(request, response);
   response.type('html').send(renderHtmlTemplate(appHtmlTemplate, request));
 }
 
@@ -3030,7 +3249,7 @@ function sendShare(request, response) {
 }
 
 app.get('/', (request, response) => {
-  if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
+  if (TURNSTILE_ENABLED && !hasPreviewAccess(request)) {
     sendLanding(request, response);
     return;
   }
@@ -3038,7 +3257,7 @@ app.get('/', (request, response) => {
 });
 
 app.get('/app', (request, response) => {
-  if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
+  if (TURNSTILE_ENABLED && !hasPreviewAccess(request)) {
     response.redirect('/');
     return;
   }
@@ -3050,7 +3269,7 @@ app.get('/share/:sessionId', (request, response) => {
 });
 
 app.get(/.*/, (request, response) => {
-  if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
+  if (TURNSTILE_ENABLED && !hasPreviewAccess(request)) {
     response.redirect('/');
     return;
   }
@@ -3058,12 +3277,130 @@ app.get(/.*/, (request, response) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({
+  noServer: true,
+  maxPayload: WEBSOCKET_MAX_PAYLOAD_BYTES,
+  perMessageDeflate: false,
+});
 
 let mqttClient = null;
 let mqttConnected = false;
 let lastSnapshotSentAt = 0;
 let pruneInterval = null;
+let webSocketHeartbeatInterval = null;
+
+function rejectWebSocketUpgrade(socket, statusCode, reason) {
+  const statusText = http.STATUS_CODES[statusCode] || 'Rejected';
+  const body = `${reason}\n`;
+  socket.end(
+    `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+    'Connection: close\r\n' +
+    'Content-Type: text/plain; charset=utf-8\r\n' +
+    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+    '\r\n' +
+    body,
+  );
+}
+
+function isAllowedWebSocketPath(request) {
+  try {
+    const parsed = new URL(request.url || '/', 'http://localhost');
+    return parsed.pathname === WEBSOCKET_PATH && !parsed.search;
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedWebSocketOrigin(request) {
+  const rawOrigin = String(request.headers?.origin || '').trim();
+  const origin = normalizeHttpOrigin(rawOrigin);
+  if (!origin) {
+    return false;
+  }
+  if (WEBSOCKET_ALLOWED_ORIGINS.length > 0) {
+    return WEBSOCKET_ALLOWED_ORIGINS.includes(origin);
+  }
+
+  let parsedOrigin;
+  try {
+    parsedOrigin = new URL(rawOrigin);
+  } catch {
+    return false;
+  }
+  if (parsedOrigin.username || parsedOrigin.password) {
+    return false;
+  }
+  const host = String(request.headers?.host || '').trim().toLowerCase();
+  if (!host || parsedOrigin.host.toLowerCase() !== host) {
+    return false;
+  }
+
+  let expectedProtocol = request.socket?.encrypted ? 'https:' : 'http:';
+  if (TRUST_PROXY) {
+    const forwardedProtocol = String(request.headers?.['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (forwardedProtocol === 'http' || forwardedProtocol === 'https') {
+      expectedProtocol = `${forwardedProtocol}:`;
+    }
+  }
+  return parsedOrigin.protocol === expectedProtocol;
+}
+
+function sendWebSocketPayload(socket, payload) {
+  if (socket.readyState !== WebSocket.OPEN) {
+    return false;
+  }
+  const pendingBytes = socket.bufferedAmount + Buffer.byteLength(payload);
+  if (pendingBytes > WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES) {
+    socket.terminate();
+    return false;
+  }
+  try {
+    socket.send(payload, (error) => {
+      if (error) {
+        socket.terminate();
+      }
+    });
+  } catch {
+    socket.terminate();
+    return false;
+  }
+  return true;
+}
+
+function stopWebSocketHeartbeatIfIdle() {
+  if (wss.clients.size > 0 || !webSocketHeartbeatInterval) {
+    return;
+  }
+  clearInterval(webSocketHeartbeatInterval);
+  webSocketHeartbeatInterval = null;
+}
+
+function ensureWebSocketHeartbeat() {
+  if (webSocketHeartbeatInterval) {
+    return;
+  }
+  webSocketHeartbeatInterval = setInterval(() => {
+    const now = Date.now();
+    for (const client of wss.clients) {
+      if (client.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+      if (now - client.lastPongAt >= WEBSOCKET_IDLE_TIMEOUT_MS) {
+        client.terminate();
+        continue;
+      }
+      try {
+        client.ping();
+      } catch {
+        client.terminate();
+      }
+    }
+  }, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
+  webSocketHeartbeatInterval.unref?.();
+}
 
 function broadcastSnapshot(force = false) {
   const now = Date.now();
@@ -3076,23 +3413,81 @@ function broadcastSnapshot(force = false) {
     data: snapshotPayload(),
   });
   for (const client of wss.clients) {
-    if (client.readyState === 1) {
-      client.send(payload);
-    }
+    sendWebSocketPayload(client, payload);
   }
 }
 
-wss.on('connection', (socket) => {
-  socket.send(JSON.stringify({
+wss.on('connection', (socket, request) => {
+  const address = clientAddress(request);
+  webSocketConnectionsByIp.set(
+    address,
+    (webSocketConnectionsByIp.get(address) || 0) + 1,
+  );
+  socket.clientAddress = address;
+  socket.lastPongAt = Date.now();
+  socket.on('pong', () => {
+    socket.lastPongAt = Date.now();
+  });
+  socket.on('message', () => {
+    socket.close(1008, 'read-only');
+  });
+  socket.on('error', () => {
+    // The close handler owns connection accounting and cleanup.
+  });
+  socket.on('close', () => {
+    const current = webSocketConnectionsByIp.get(address) || 0;
+    if (current <= 1) {
+      webSocketConnectionsByIp.delete(address);
+    } else {
+      webSocketConnectionsByIp.set(address, current - 1);
+    }
+    stopWebSocketHeartbeatIfIdle();
+  });
+  ensureWebSocketHeartbeat();
+  sendWebSocketPayload(socket, JSON.stringify({
     type: 'snapshot',
     data: snapshotPayload(),
   }));
 });
 
 server.on('upgrade', (request, socket, head) => {
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request);
-  });
+  if (!isAllowedWebSocketPath(request)) {
+    rejectWebSocketUpgrade(socket, 404, 'websocket_path_not_found');
+    return;
+  }
+  if (!isAllowedWebSocketOrigin(request)) {
+    rejectWebSocketUpgrade(socket, 403, 'websocket_origin_forbidden');
+    return;
+  }
+  if (!hasWebSocketAccess(request)) {
+    rejectWebSocketUpgrade(socket, 401, 'websocket_auth_required');
+    return;
+  }
+
+  const address = clientAddress(request);
+  if (wss.clients.size >= WEBSOCKET_GLOBAL_CAP) {
+    rejectWebSocketUpgrade(socket, 503, 'websocket_capacity_reached');
+    return;
+  }
+  if ((webSocketConnectionsByIp.get(address) || 0) >= WEBSOCKET_PER_IP_CAP) {
+    rejectWebSocketUpgrade(socket, 429, 'websocket_ip_capacity_reached');
+    return;
+  }
+
+  try {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } catch {
+    socket.destroy();
+  }
+});
+
+server.on('close', () => {
+  if (webSocketHeartbeatInterval) {
+    clearInterval(webSocketHeartbeatInterval);
+    webSocketHeartbeatInterval = null;
+  }
 });
 
 function startMqtt() {
@@ -3179,10 +3574,15 @@ function startRuntime() {
 
 export function resetTestState() {
   flushScheduledWrites();
+  for (const client of wss.clients) {
+    client.terminate();
+  }
   sessions.clear();
   messageToSession.clear();
   rateLimitBuckets.clear();
   turnstileAuthTokens.clear();
+  webSocketAuthTokens.clear();
+  webSocketConnectionsByIp.clear();
   observerState.clear();
   observerActivityHistory.clear();
   for (const [key, entry] of baselineObserverActivityHistory.entries()) {
