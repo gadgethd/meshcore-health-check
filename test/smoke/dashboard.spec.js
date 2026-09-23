@@ -98,10 +98,20 @@ async function openMockMapSession(page, observerDirectory, expectedObservers) {
     contentType: 'application/json',
     body: JSON.stringify(mapBootstrap(observerDirectory)),
   }));
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({
-    contentType: 'application/json',
-    body: JSON.stringify(mapSession(expectedObservers)),
-  }));
+  await page.route('**/api/sessions*', (route) => {
+    if (route.request().method() === 'GET') {
+      return route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          sessions: [{
+            sessionId: 'map-session',
+            session: mapSession(expectedObservers),
+          }],
+        }),
+      });
+    }
+    return route.continue();
+  });
   await page.goto('/share/map-session');
 }
 
@@ -120,6 +130,23 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page.locator('#map-observer-note')).toContainText('mapped observers reached.');
   await expect(page.getByText('When each observer saw it')).toBeVisible();
   await expect(page.getByText('Timeline appears after the first observer report.')).toBeVisible();
+});
+
+test('dashboard reports a retry state when bootstrap returns a non-JSON error', async ({ page }) => {
+  await page.route('**/api/bootstrap', (route) => route.fulfill({
+    status: 503,
+    contentType: 'text/html',
+    body: '<!doctype html><title>temporarily unavailable</title>',
+  }));
+
+  await page.goto('/app');
+
+  await expect(page.locator('#transport-status')).toHaveText(
+    'Dashboard connection unavailable — retrying.',
+  );
+  await expect(page.locator('#session-instructions')).toHaveText(
+    'Dashboard temporarily unavailable. Retrying…',
+  );
 });
 
 test('share button uses the browser share API with the retained share link', async ({ page }) => {

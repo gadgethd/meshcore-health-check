@@ -28,17 +28,6 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-async function cacheFirst(request) {
-  const cached = await caches.match(request);
-  if (cached) {
-    return cached;
-  }
-  const response = await fetch(request);
-  const cache = await caches.open(CACHE_NAME);
-  cache.put(request, response.clone());
-  return response;
-}
-
 async function networkFirst(request) {
   try {
     const response = await fetch(new Request(request, { cache: 'no-store' }));

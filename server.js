@@ -2,9 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import {
-  createDecipheriv,
   createHash,
-  createHmac,
   randomBytes,
   randomUUID,
 } from 'node:crypto';
@@ -17,7 +15,6 @@ import { WebSocketServer } from 'ws';
 import { createTileRouter } from './lib/tile-proxy.js';
 import {
   calculateChannelHash,
-  decodePathLenByte,
   normalizeHex,
   normalizeKey,
   normalizeLogLevel,
@@ -99,6 +96,18 @@ function envBool(name, fallback = false) {
     return fallback;
   }
   return ['1', 'true', 'yes', 'on'].includes(raw);
+}
+
+const MESHCORE_PUBLIC_KEY_HEX_LENGTH = 64;
+const MAX_MQTT_PAYLOAD_BYTES = 64 * 1024;
+
+function normalizeObserverKey(value) {
+  const normalized = normalizeKey(value);
+  return normalized.length === MESHCORE_PUBLIC_KEY_HEX_LENGTH ? normalized : '';
+}
+
+function isMqttPayloadWithinLimit(payloadBuffer) {
+  return Boolean(payloadBuffer && Number(payloadBuffer.length) <= MAX_MQTT_PAYLOAD_BYTES);
 }
 
 function normalizeTrustProxy(value) {
@@ -358,6 +367,11 @@ const TURNSTILE_ENABLED = envBool(
   'TURNSTILE_ENABLED',
   Boolean(TURNSTILE_SITE_KEY && TURNSTILE_SECRET_KEY),
 );
+if (TURNSTILE_ENABLED && (!TURNSTILE_SITE_KEY || !TURNSTILE_SECRET_KEY)) {
+  throw new Error(
+    'TURNSTILE_ENABLED=true requires both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY',
+  );
+}
 const TURNSTILE_API_URL = envValue(
   'TURNSTILE_API_URL',
   'https://challenges.cloudflare.com/turnstile/v0/siteverify',
@@ -390,6 +404,10 @@ const TURNSTILE_VERIFY_RATE_MAX = Math.max(
   1,
   envNumber('TURNSTILE_VERIFY_RATE_MAX', 10),
 );
+const TURNSTILE_VERIFY_TIMEOUT_MS = Math.max(
+  1000,
+  Math.min(30000, envNumber('TURNSTILE_VERIFY_TIMEOUT_MS', 5000)),
+);
 const SESSION_RATE_WINDOW_MS = Math.max(
   60,
   envNumber('SESSION_RATE_WINDOW_SECONDS', 600),
@@ -414,10 +432,35 @@ const OBSERVER_HASH_DISPLAY_BYTES = Math.max(
   1,
   Math.min(3, Math.round(envNumber('OBSERVER_HASH_DISPLAY_BYTES', 1))),
 );
-const OBSERVER_RETENTION_SECONDS = envNumber('OBSERVER_RETENTION_SECONDS', 14400);
+const OBSERVER_RETENTION_SECONDS = envNumber('OBSERVER_RETENTION_SECONDS', 0);
 const OBSERVER_RETENTION_MS = OBSERVER_RETENTION_SECONDS <= 0
   ? 0
   : Math.max(300, OBSERVER_RETENTION_SECONDS) * 1000;
+const OBSERVER_ACTIVITY_RETENTION_DAYS = Math.max(
+  OBSERVER_TOP_WINDOW_DAYS,
+  Math.round(envNumber('OBSERVER_ACTIVITY_RETENTION_DAYS', 30)),
+);
+const OBSERVER_ACTIVITY_RETENTION_MS = OBSERVER_ACTIVITY_RETENTION_DAYS * 86400000;
+const MAX_OBSERVER_ENTRIES = Math.max(
+  1,
+  Math.round(envNumber('MAX_OBSERVER_ENTRIES', 10000)),
+);
+const MAX_RATE_LIMIT_BUCKETS = Math.max(
+  1,
+  Math.round(envNumber('MAX_RATE_LIMIT_BUCKETS', 10000)),
+);
+const MAX_WS_CONNECTIONS = Math.max(
+  1,
+  Math.round(envNumber('MAX_WS_CONNECTIONS', 512)),
+);
+const MAX_WS_BUFFERED_BYTES = Math.max(
+  65536,
+  Math.round(envNumber('MAX_WS_BUFFERED_BYTES', 1048576)),
+);
+const WS_HEARTBEAT_INTERVAL_MS = Math.max(
+  10000,
+  Math.round(envNumber('WS_HEARTBEAT_INTERVAL_MS', 30000)),
+);
 const SESSION_TTL_MS = Math.max(60, envNumber('SESSION_TTL_SECONDS', 600)) * 1000;
 const RESULT_RETENTION_MS = Math.max(
   SESSION_TTL_MS / 1000,
@@ -428,7 +471,7 @@ const SESSION_HASH_ALIAS_WINDOW_MS = Math.max(
   envNumber('SESSION_HASH_ALIAS_WINDOW_SECONDS', 90),
 ) * 1000;
 const MAX_USES_PER_CODE = Math.max(1, envNumber('MAX_USES_PER_CODE', 3));
-const KNOWN_OBSERVERS = dedupe(envList('KNOWN_OBSERVERS').map(normalizeKey));
+const KNOWN_OBSERVERS = dedupe(envList('KNOWN_OBSERVERS').map(normalizeObserverKey));
 
 const channelsConfig = readStructuredFile(
   envValue('CHANNELS_FILE', ''),
@@ -482,43 +525,6 @@ if (!testChannelHash) {
     }
   }
 }
-
-function buildDecoderKeyCandidate(secretHex, channelHash = '') {
-  const normalizedSecret = normalizeHex(secretHex);
-  if (!normalizedSecret) {
-    return null;
-  }
-  const secretBytes = Buffer.from(normalizedSecret, 'hex');
-  if (secretBytes.length < 16) {
-    return null;
-  }
-  const aesKey = secretBytes.subarray(0, 16);
-  const hmacKey = Buffer.alloc(32);
-  secretBytes.copy(hmacKey, 0, 0, Math.min(secretBytes.length, 32));
-  return {
-    secretHex: normalizedSecret,
-    channelHash: String(channelHash || '').trim().toLowerCase(),
-    aesKey,
-    hmacKey,
-  };
-}
-
-const decoderKeyCandidates = (() => {
-  if (envTestChannelSecret) {
-    const candidate = buildDecoderKeyCandidate(envTestChannelSecret, testChannelHash);
-    if (candidate) {
-      return [candidate];
-    }
-  }
-  const fallback = testChannelHash ? channelHashToInfo.get(testChannelHash) : null;
-  if (fallback?.secret) {
-    const candidate = buildDecoderKeyCandidate(fallback.secret, testChannelHash);
-    if (candidate) {
-      return [candidate];
-    }
-  }
-  return [];
-})();
 
 const meshPacketDecoderKeyStore = envTestChannelSecret
   ? MeshCorePacketDecoder.createKeyStore({
@@ -723,6 +729,7 @@ const turnstileAuthTokens = new Map();
 let observerNamesWriteTimer = null;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
+const asyncFileWriteQueues = new Map();
 
 function writeJsonFileAtomic(filePath, payload) {
   const body = `${JSON.stringify(payload, null, 2)}\n`;
@@ -733,16 +740,81 @@ function writeJsonFileAtomic(filePath, payload) {
     fs.renameSync(tempPath, filePath);
   } catch (error) {
     if (error?.code === 'EBUSY' || error?.code === 'EXDEV') {
-      fs.writeFileSync(filePath, body, 'utf8');
       try {
-        fs.unlinkSync(tempPath);
-      } catch {
-        // ignore cleanup failure
+        fs.writeFileSync(filePath, body, 'utf8');
+        try {
+          fs.unlinkSync(tempPath);
+        } catch {
+          // ignore cleanup failure
+        }
+        return;
+      } catch (fallbackError) {
+        logger.warn(`[storage] failed to write ${filePath}: ${fallbackError.message}`);
       }
-      return;
     }
-    throw error;
+    logger.warn(`[storage] failed to write ${filePath}: ${error.message}`);
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // preserve the last known-good file when cleanup also fails
+    }
   }
+}
+
+async function writeJsonFileAtomicAsync(filePath, payload) {
+  const body = `${JSON.stringify(payload, null, 2)}\n`;
+  const tempPath = `${filePath}.tmp`;
+  try {
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.promises.writeFile(tempPath, body, 'utf8');
+    await fs.promises.rename(tempPath, filePath);
+  } catch (error) {
+    if (error?.code === 'EBUSY' || error?.code === 'EXDEV') {
+      try {
+        await fs.promises.writeFile(filePath, body, 'utf8');
+        await fs.promises.unlink(tempPath).catch(() => {});
+        return;
+      } catch (fallbackError) {
+        logger.warn(`[storage] failed to write ${filePath}: ${fallbackError.message}`);
+      }
+    } else {
+      logger.warn(`[storage] failed to write ${filePath}: ${error.message}`);
+    }
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+function queueJsonFileWrite(filePath, payload) {
+  let queue = asyncFileWriteQueues.get(filePath);
+  if (!queue) {
+    queue = {
+      payload: null,
+      running: false,
+      promise: Promise.resolve(),
+    };
+    asyncFileWriteQueues.set(filePath, queue);
+  }
+  queue.payload = payload;
+  if (queue.running) {
+    return queue.promise;
+  }
+
+  queue.running = true;
+  queue.promise = (async () => {
+    while (queue.payload !== null) {
+      const nextPayload = queue.payload;
+      queue.payload = null;
+      await writeJsonFileAtomicAsync(filePath, nextPayload);
+    }
+  })().catch((error) => {
+    logger.warn(`[storage] queued write failed for ${filePath}: ${error.message}`);
+  }).finally(() => {
+    queue.running = false;
+    if (queue.payload === null) {
+      asyncFileWriteQueues.delete(filePath);
+    }
+  });
+  return queue.promise;
 }
 
 function parseObserverActivityJson(filePath) {
@@ -931,14 +1003,18 @@ function restoreSessionRecord(rawSession) {
   };
 }
 
-function writeResultsFile() {
-  const payload = {
+function resultsFilePayload() {
+  return {
     version: 1,
     sessions: [...sessions.values()]
       .filter((session) => isRetainedSession(session))
       .sort((left, right) => left.createdAt - right.createdAt)
       .map(serializeSessionRecord),
   };
+}
+
+function writeResultsFile() {
+  const payload = resultsFilePayload();
   writeJsonFileAtomic(RESULTS_FILE_PATH, payload);
 }
 
@@ -951,29 +1027,52 @@ function scheduleResultsWrite() {
   }
   resultsWriteTimer = setTimeout(() => {
     resultsWriteTimer = null;
-    writeResultsFile();
+    queueJsonFileWrite(RESULTS_FILE_PATH, resultsFilePayload());
   }, 250);
 }
 
-function flushScheduledWrites() {
+function cancelScheduledWriteTimers() {
   if (observerNamesWriteTimer) {
     clearTimeout(observerNamesWriteTimer);
     observerNamesWriteTimer = null;
-    writeObserverNamesFile();
   }
   if (observerActivityWriteTimer) {
     clearTimeout(observerActivityWriteTimer);
     observerActivityWriteTimer = null;
-    writeObserverActivityFile();
   }
   if (resultsWriteTimer) {
     clearTimeout(resultsWriteTimer);
     resultsWriteTimer = null;
+  }
+}
+
+function flushScheduledWrites() {
+  cancelScheduledWriteTimers();
+  writeObserverNamesFile();
+  writeObserverActivityFile();
+  if (!DISABLE_RESULTS_FILE_WRITES) {
     writeResultsFile();
   }
 }
 
-function writeObserverNamesFile() {
+async function flushScheduledWritesAsync() {
+  cancelScheduledWriteTimers();
+  const pendingWrites = [...asyncFileWriteQueues.values()].map((queue) => queue.promise);
+  await Promise.all(pendingWrites);
+  const writes = [];
+  if (!DISABLE_OBSERVER_FILE_WRITES) {
+    writes.push(
+      writeJsonFileAtomicAsync(OBSERVERS_FILE_PATH, observerNamesFilePayload()),
+      writeJsonFileAtomicAsync(OBSERVER_ACTIVITY_FILE_PATH, observerActivityFilePayload()),
+    );
+  }
+  if (!DISABLE_RESULTS_FILE_WRITES) {
+    writes.push(writeJsonFileAtomicAsync(RESULTS_FILE_PATH, resultsFilePayload()));
+  }
+  await Promise.all(writes);
+}
+
+function observerNamesFilePayload() {
   const payload = {};
   for (const [key, profile] of [...observerProfiles.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     if (!profile) {
@@ -988,6 +1087,11 @@ function writeObserverNamesFile() {
       ...(lon != null ? { lon } : {}),
     };
   }
+  return payload;
+}
+
+function writeObserverNamesFile() {
+  const payload = observerNamesFilePayload();
   writeJsonFileAtomic(OBSERVERS_FILE_PATH, payload);
 }
 
@@ -1000,11 +1104,11 @@ function scheduleObserverNamesWrite() {
   }
   observerNamesWriteTimer = setTimeout(() => {
     observerNamesWriteTimer = null;
-    writeObserverNamesFile();
-  }, 250);
+    queueJsonFileWrite(OBSERVERS_FILE_PATH, observerNamesFilePayload());
+  }, 1000);
 }
 
-function writeObserverActivityFile() {
+function observerActivityFilePayload() {
   const observers = {};
   for (const [key, entry] of [...observerActivityHistory.entries()].sort(([left], [right]) => left.localeCompare(right))) {
     const days = Object.fromEntries(
@@ -1022,10 +1126,14 @@ function writeObserverActivityFile() {
       ...(Number.isFinite(lastPacketAt) && lastPacketAt > 0 ? { lastPacketAt } : {}),
     };
   }
-  writeJsonFileAtomic(OBSERVER_ACTIVITY_FILE_PATH, {
+  return {
     version: 1,
     observers,
-  });
+  };
+}
+
+function writeObserverActivityFile() {
+  writeJsonFileAtomic(OBSERVER_ACTIVITY_FILE_PATH, observerActivityFilePayload());
 }
 
 function scheduleObserverActivityWrite() {
@@ -1034,8 +1142,8 @@ function scheduleObserverActivityWrite() {
   }
   observerActivityWriteTimer = setTimeout(() => {
     observerActivityWriteTimer = null;
-    writeObserverActivityFile();
-  }, 250);
+    queueJsonFileWrite(OBSERVER_ACTIVITY_FILE_PATH, observerActivityFilePayload());
+  }, 1000);
 }
 
 if (!fs.existsSync(OBSERVERS_FILE_PATH)) {
@@ -1167,11 +1275,34 @@ function linkSessionHash(session, hash) {
   messageToSession.set(normalizedHash, session.id);
 }
 
+function isPacketCompatibleWithSession(session, packetInfo) {
+  if (!session || !packetInfo) {
+    return false;
+  }
+  const sessionBody = String(session.messageBody || '').trim();
+  const packetBody = String(packetInfo.messageBody || '').trim();
+  if (!sessionBody || !packetBody || sessionBody !== packetBody) {
+    return false;
+  }
+  const sessionSender = normalizedSender(session.sender);
+  const packetSender = normalizedSender(packetInfo.sender);
+  if (!sessionSender || !packetSender || sessionSender !== packetSender) {
+    return false;
+  }
+  if (!session.channelHash || !packetInfo.channelHash || session.channelHash !== packetInfo.channelHash) {
+    return false;
+  }
+  return true;
+}
+
 function isSameActiveMessageAlias(session, packetInfo) {
   if (!session?.messageHash || !session?.matchedAt) {
     return false;
   }
   if (!packetInfo?.messageHash || !packetInfo?.messageBody) {
+    return false;
+  }
+  if (!isPacketCompatibleWithSession(session, packetInfo)) {
     return false;
   }
   if (packetInfo.messageHash === session.messageHash) {
@@ -1181,17 +1312,6 @@ function isSameActiveMessageAlias(session, packetInfo) {
     return false;
   }
   if (session.receipts?.size <= 0) {
-    return false;
-  }
-  if (String(session.messageBody || '').trim() !== String(packetInfo.messageBody || '').trim()) {
-    return false;
-  }
-  const currentSender = normalizedSender(session.sender);
-  const nextSender = normalizedSender(packetInfo.sender);
-  if (currentSender && nextSender && currentSender !== nextSender) {
-    return false;
-  }
-  if (session.channelHash && packetInfo.channelHash && session.channelHash !== packetInfo.channelHash) {
     return false;
   }
   return true;
@@ -1365,10 +1485,33 @@ function isAllowlistedTurnstileBot(requestLike) {
   return TURNSTILE_BOT_ALLOWLIST.some((token) => token && userAgent.includes(token));
 }
 
+function pruneRateLimitBuckets(now = Date.now()) {
+  let removed = false;
+  for (const [key, bucket] of rateLimitBuckets.entries()) {
+    if (!bucket || bucket.resetAt <= now) {
+      rateLimitBuckets.delete(key);
+      removed = true;
+    }
+  }
+
+  if (rateLimitBuckets.size > MAX_RATE_LIMIT_BUCKETS) {
+    const overflow = rateLimitBuckets.size - MAX_RATE_LIMIT_BUCKETS;
+    const oldest = [...rateLimitBuckets.entries()]
+      .sort(([, left], [, right]) => left.resetAt - right.resetAt)
+      .slice(0, overflow);
+    for (const [key] of oldest) {
+      rateLimitBuckets.delete(key);
+      removed = true;
+    }
+  }
+  return removed;
+}
+
 function rateLimit(namespace, maxRequests, windowMs) {
   return (request, response, next) => {
     const key = `${namespace}:${clientAddress(request)}`;
     const now = Date.now();
+    pruneRateLimitBuckets(now);
     const existing = rateLimitBuckets.get(key);
     if (!existing || existing.resetAt <= now) {
       rateLimitBuckets.set(key, {
@@ -1494,23 +1637,41 @@ async function verifyTurnstileToken(token, remoteIp = '') {
         'content-type': 'application/x-www-form-urlencoded',
       },
       body,
+      signal: AbortSignal.timeout(TURNSTILE_VERIFY_TIMEOUT_MS),
     });
-    const payload = await response.json();
-    if (payload?.success) {
+    const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+    if (!response.ok || !contentType.includes('application/json')) {
+      logger.warn(
+        `[turnstile] verification endpoint returned ${response.status} ${contentType || 'unknown content type'}`,
+      );
+      return { success: false, error: 'verification_unavailable' };
+    }
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      logger.warn(`[turnstile] verification response was not valid JSON: ${error.message}`);
+      return { success: false, error: 'verification_unavailable' };
+    }
+    if (!payload || typeof payload.success !== 'boolean') {
+      logger.warn('[turnstile] verification response did not match the expected schema');
+      return { success: false, error: 'verification_unavailable' };
+    }
+    if (payload.success) {
       return { success: true, error: '' };
     }
-    return {
-      success: false,
-      error: Array.isArray(payload?.['error-codes'])
-        ? payload['error-codes'].join(', ')
-        : 'verification_failed',
-    };
+    return { success: false, error: 'verification_failed' };
   } catch (error) {
-    return { success: false, error: error.message || 'verification_error' };
+    logger.warn(`[turnstile] verification request failed: ${String(error?.name || error?.message || 'request error').slice(0, 120)}`);
+    return { success: false, error: 'verification_unavailable' };
   }
 }
 
 function parseEnvelope(payloadBuffer) {
+  if (!isMqttPayloadWithinLimit(payloadBuffer)) {
+    return { raw: '', envelope: null };
+  }
   const text = payloadBuffer.toString('utf8').trim();
   if (!text) {
     return { raw: '', envelope: null };
@@ -1537,13 +1698,16 @@ function parseEnvelope(payloadBuffer) {
 }
 
 function parseJsonObject(payloadBuffer) {
+  if (!isMqttPayloadWithinLimit(payloadBuffer)) {
+    return null;
+  }
   const text = payloadBuffer.toString('utf8').trim();
   if (!text.startsWith('{') || !text.endsWith('}')) {
     return null;
   }
   try {
     const parsed = JSON.parse(text);
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -1579,207 +1743,6 @@ function extractDeviceName(obj, topic = '') {
   }
 
   return '';
-}
-
-function parsePacketHex(rawHex) {
-  const normalized = normalizeHex(rawHex);
-  if (!normalized || normalized.length < 4) {
-    return null;
-  }
-  const bytes = Buffer.from(normalized, 'hex');
-  if (bytes.length < 2) {
-    return null;
-  }
-
-  let offset = 0;
-  const header = bytes[offset];
-  const routeType = header & 0x03;
-  const payloadType = (header >> 2) & 0x0F;
-  offset += 1;
-
-  if (routeType === 0 || routeType === 3) {
-    if (bytes.length < offset + 4) {
-      return null;
-    }
-    offset += 4;
-  }
-
-  if (bytes.length < offset + 1) {
-    return null;
-  }
-  const pathInfo = decodePathLenByte(bytes[offset]);
-  offset += 1;
-  if (!pathInfo) {
-    return null;
-  }
-
-  if (bytes.length < offset + pathInfo.byteLength) {
-    return null;
-  }
-  const pathBytes = bytes.subarray(offset, offset + pathInfo.byteLength);
-  const path = [];
-  for (let index = 0; index < pathInfo.hopCount; index += 1) {
-    const start = index * pathInfo.hashSize;
-    const hop = normalizePathHop(
-      pathBytes.subarray(start, start + pathInfo.hashSize).toString('hex'),
-    );
-    if (hop) {
-      path.push(hop);
-    }
-  }
-  offset += pathInfo.byteLength;
-
-  if (bytes.length < offset) {
-    return null;
-  }
-  return {
-    routeType,
-    payloadType,
-    pathHashSize: pathInfo.hashSize,
-    path,
-    payloadBytes: bytes.subarray(offset),
-  };
-}
-
-function parseGroupTextPayload(packet) {
-  if (!packet || packet.payloadType !== 5) {
-    return null;
-  }
-  const payloadBytes = packet.payloadBytes;
-  if (!payloadBytes || payloadBytes.length < 4) {
-    return null;
-  }
-  return {
-    channelHash: payloadBytes.subarray(0, 1).toString('hex').toLowerCase(),
-    macBytes: payloadBytes.subarray(1, 3),
-    encryptedBytes: payloadBytes.subarray(3),
-  };
-}
-
-function decryptAesEcbTruncated(aesKey, encryptedBytes) {
-  if (!aesKey || aesKey.length !== 16 || !encryptedBytes || encryptedBytes.length === 0) {
-    return null;
-  }
-  const paddedLength = Math.ceil(encryptedBytes.length / 16) * 16;
-  const padded = Buffer.alloc(paddedLength);
-  encryptedBytes.copy(padded);
-  try {
-    const decipher = createDecipheriv('aes-128-ecb', aesKey, null);
-    decipher.setAutoPadding(false);
-    const decrypted = Buffer.concat([decipher.update(padded), decipher.final()]);
-    return decrypted.subarray(0, encryptedBytes.length);
-  } catch {
-    return null;
-  }
-}
-
-function hasValidGroupTextMac(hmacKey, macBytes, encryptedBytes) {
-  if (!hmacKey || hmacKey.length === 0 || !macBytes || macBytes.length < 2) {
-    return false;
-  }
-  const digest = createHmac('sha256', hmacKey).update(encryptedBytes).digest();
-  return macBytes[0] === digest[0] && macBytes[1] === digest[1];
-}
-
-function sanitizeDecodedText(value) {
-  return String(value || '')
-    .replace(/\uFFFD/g, '')
-    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
-    .replace(/\x00+$/g, '')
-    .trim();
-}
-
-function evaluateDecodedGroupText(plaintextBytes) {
-  if (!plaintextBytes || plaintextBytes.length < 6) {
-    return null;
-  }
-  const timestamp = plaintextBytes.readUInt32LE(0);
-  const year = new Date(timestamp * 1000).getUTCFullYear();
-  if (year < 2023 || year > 2035) {
-    return null;
-  }
-  const messageBytes = plaintextBytes.subarray(5);
-  if (messageBytes.length === 0) {
-    return null;
-  }
-  let printableCount = 0;
-  for (const value of messageBytes.values()) {
-    if ((value >= 32 && value <= 126) || value === 9 || value === 10 || value === 13) {
-      printableCount += 1;
-    }
-  }
-  const printableRatio = printableCount / messageBytes.length;
-  if (printableRatio < 0.7) {
-    return null;
-  }
-
-  const decoded = sanitizeDecodedText(messageBytes.toString('utf8'));
-  if (!decoded) {
-    return null;
-  }
-
-  const splitIndex = decoded.indexOf(': ');
-  let sender = '';
-  let message = decoded;
-  if (splitIndex > 0 && splitIndex < 50) {
-    const maybeSender = decoded.slice(0, splitIndex).trim();
-    if (maybeSender && !/[:\[\]]/.test(maybeSender)) {
-      sender = maybeSender;
-      message = decoded.slice(splitIndex + 2).trim();
-    }
-  }
-
-  if (!message) {
-    return null;
-  }
-
-  return {
-    timestamp,
-    sender,
-    message,
-    score: printableRatio + (decoded.includes(': ') ? 0.35 : 0),
-  };
-}
-
-function tryDecodeGroupText(groupPayload) {
-  if (!groupPayload || decoderKeyCandidates.length === 0) {
-    return null;
-  }
-  if (!shouldDecodeChannel(testChannelHash, groupPayload.channelHash)) {
-    return null;
-  }
-  let bestWeakMatch = null;
-
-  for (const candidate of decoderKeyCandidates) {
-    const plaintext = decryptAesEcbTruncated(candidate.aesKey, groupPayload.encryptedBytes);
-    if (!plaintext) {
-      continue;
-    }
-    const decoded = evaluateDecodedGroupText(plaintext);
-    if (!decoded) {
-      continue;
-    }
-    const macValid = hasValidGroupTextMac(
-      candidate.hmacKey,
-      groupPayload.macBytes,
-      groupPayload.encryptedBytes,
-    );
-    const result = {
-      channelHash: groupPayload.channelHash,
-      sender: decoded.sender,
-      message: decoded.message,
-      timestamp: decoded.timestamp,
-      macValid,
-      score: decoded.score,
-    };
-    if (macValid) {
-      return result;
-    }
-    if (!bestWeakMatch || result.score > bestWeakMatch.score) {
-      bestWeakMatch = result;
-    }
-  }
-  return bestWeakMatch;
 }
 
 function decodeMeshPacket(rawHex) {
@@ -2509,8 +2472,8 @@ function updateObserverLocation(observerKey, location) {
 }
 
 function handleObserverMetadata(topic, observerKey, payloadBuffer) {
-  const observer = touchObserver(observerKey);
-  if (!observer) {
+  const normalizedObserverKey = normalizeObserverKey(observerKey);
+  if (!normalizedObserverKey || !isMqttPayloadWithinLimit(payloadBuffer)) {
     return false;
   }
 
@@ -2519,10 +2482,26 @@ function handleObserverMetadata(topic, observerKey, payloadBuffer) {
     return false;
   }
 
-  const metadataObserverKey = normalizeKey(
+  const metadataFields = [
+    'name', 'label', 'origin', 'origin_id', 'originId', 'publicKey', 'public_key',
+    'location', 'lat', 'lon', 'latitude', 'longitude',
+  ];
+  if (!metadataFields.some((field) => Object.prototype.hasOwnProperty.call(parsed, field))) {
+    return false;
+  }
+  const rawMetadataObserverKey = String(
     parsed.origin_id || parsed.originId || parsed.publicKey || parsed.public_key || '',
-  );
-  if (metadataObserverKey && metadataObserverKey !== observer.key) {
+  ).trim();
+  const metadataObserverKey = normalizeObserverKey(rawMetadataObserverKey);
+  if (rawMetadataObserverKey && !metadataObserverKey) {
+    return false;
+  }
+  if (metadataObserverKey && metadataObserverKey !== normalizedObserverKey) {
+    return false;
+  }
+
+  const observer = touchObserver(normalizedObserverKey);
+  if (!observer) {
     return false;
   }
 
@@ -2536,7 +2515,7 @@ function handleObserverMetadata(topic, observerKey, payloadBuffer) {
   return changed;
 }
 
-function matchSessionByCode(messageText) {
+function matchSessionByCode(messageText, packetInfo = null) {
   const body = String(messageText || '').trim();
   if (!body) {
     return null;
@@ -2546,7 +2525,7 @@ function matchSessionByCode(messageText) {
     .filter((session) =>
       session.status !== 'expired' &&
       now < session.expiresAt &&
-      session.useCount < session.maxUses
+      (session.useCount < session.maxUses || isSameActiveMessageAlias(session, packetInfo))
     )
     .sort((left, right) => right.createdAt - left.createdAt);
   for (const session of availableSessions) {
@@ -2589,9 +2568,12 @@ function maybeMatchSession(packetInfo) {
   }
   const mappedSessionId = messageToSession.get(packetInfo.messageHash);
   if (mappedSessionId) {
-    return sessions.get(mappedSessionId) || null;
+    const mappedSession = sessions.get(mappedSessionId);
+    return mappedSession && isPacketCompatibleWithSession(mappedSession, packetInfo)
+      ? mappedSession
+      : null;
   }
-  const session = matchSessionByCode(packetInfo.messageBody);
+  const session = matchSessionByCode(packetInfo.messageBody, packetInfo);
   if (!session) {
     return null;
   }
@@ -2656,9 +2638,102 @@ function recordReceipt(session, packetInfo) {
   return true;
 }
 
+function isPinnedObserver(observerKey) {
+  return KNOWN_OBSERVERS.includes(observerKey);
+}
+
+function pruneObserverState(now = Date.now()) {
+  let changed = false;
+  const activityCutoff = now - OBSERVER_ACTIVITY_RETENTION_MS;
+
+  for (const [key, entry] of [...observerActivityHistory.entries()]) {
+    const days = { ...(entry?.days || {}) };
+    for (const dayKey of Object.keys(days)) {
+      const dayTimestamp = Date.parse(`${dayKey}T00:00:00Z`);
+      if (Number.isFinite(dayTimestamp) && dayTimestamp < activityCutoff) {
+        delete days[dayKey];
+        changed = true;
+      }
+    }
+    const lastPacketAt = Number(entry?.lastPacketAt || 0);
+    if (
+      !isPinnedObserver(key)
+      && Object.keys(days).length === 0
+      && (!lastPacketAt || lastPacketAt < activityCutoff)
+    ) {
+      observerActivityHistory.delete(key);
+      changed = true;
+      continue;
+    }
+    if (Object.keys(days).length !== Object.keys(entry?.days || {}).length) {
+      observerActivityHistory.set(key, { days, lastPacketAt });
+    }
+  }
+
+  if (OBSERVER_RETENTION_MS > 0) {
+    for (const [key, observer] of [...observerState.entries()]) {
+      if (
+        !isPinnedObserver(key)
+        && (!observer?.lastPacketAt || now - observer.lastPacketAt > OBSERVER_RETENTION_MS)
+      ) {
+        observerState.delete(key);
+        changed = true;
+      }
+    }
+  }
+
+  const evictOldest = (collection, lastSeen) => {
+    if (collection.size <= MAX_OBSERVER_ENTRIES) {
+      return false;
+    }
+    const candidates = [...collection.entries()]
+      .filter(([key]) => !isPinnedObserver(key))
+      .sort(([leftKey, left], [rightKey, right]) => {
+        const leftTime = Number(lastSeen(leftKey, left) || 0);
+        const rightTime = Number(lastSeen(rightKey, right) || 0);
+        return leftTime - rightTime || leftKey.localeCompare(rightKey);
+      });
+    let evicted = false;
+    for (const [key] of candidates) {
+      if (collection.size <= MAX_OBSERVER_ENTRIES) {
+        break;
+      }
+      collection.delete(key);
+      evicted = true;
+    }
+    return evicted;
+  };
+
+  if (evictOldest(
+    observerState,
+    (key, observer) => Math.max(observer?.lastPacketAt || 0, observerActivityHistory.get(key)?.lastPacketAt || 0),
+  )) {
+    changed = true;
+  }
+  if (evictOldest(
+    observerProfiles,
+    (key) => observerActivityHistory.get(key)?.lastPacketAt || observerState.get(key)?.lastPacketAt || 0,
+  )) {
+    changed = true;
+    scheduleObserverNamesWrite();
+  }
+  if (evictOldest(
+    observerActivityHistory,
+    (_key, entry) => entry?.lastPacketAt || 0,
+  )) {
+    changed = true;
+  }
+
+  if (changed) {
+    scheduleObserverActivityWrite();
+  }
+  return changed;
+}
+
 function pruneState() {
   const now = Date.now();
-  let changed = false;
+  let changed = pruneRateLimitBuckets(now);
+  changed = pruneObserverState(now) || changed;
 
   cleanupExpiredTurnstileTokens();
 
@@ -2694,11 +2769,10 @@ function channelDisplay(channelHash) {
 }
 
 function handlePacketMessage(topic, observerKey, payloadBuffer) {
-  const observer = touchObserver(observerKey);
-  if (!observer) {
+  const normalizedObserverKey = normalizeObserverKey(observerKey);
+  if (!normalizedObserverKey || !isMqttPayloadWithinLimit(payloadBuffer)) {
     return;
   }
-  noteObserverPacketActivity(observer.key);
 
   const { raw, envelope } = parseEnvelope(payloadBuffer);
   if (!raw) {
@@ -2709,7 +2783,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   if (!packet?.isValid) {
     if (packet?.errors?.length) {
       logger.debug(
-        `[mqtt] packet parse failed on ${shortKey(observer.key)}: ${packet.errors.join('; ')}`,
+        `[mqtt] packet parse failed on ${shortKey(normalizedObserverKey)}: ${packet.errors.join('; ')}`,
       );
     }
     return;
@@ -2718,7 +2792,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   const decodedPayload = packet.payload?.decoded && typeof packet.payload.decoded === 'object'
     ? packet.payload.decoded
     : null;
-  const decodedPayloadObserverKey = normalizeKey(decodedPayload?.publicKey || '');
+  const decodedPayloadObserverKey = normalizeObserverKey(decodedPayload?.publicKey || '');
   const shouldLearnPacketMetadata = Boolean(decodedPayloadObserverKey);
   let metadataChanged = false;
   const decodedAppData = shouldLearnPacketMetadata
@@ -2744,15 +2818,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     ) || metadataChanged;
   }
   if (metadataChanged) {
-    broadcastSnapshot(true);
-  }
-
-  const path = Array.isArray(packet.path)
-    ? packet.path.map((value) => normalizePathHop(value)).filter(Boolean)
-    : [];
-  const terminalObserverHop = observerPathHop(observer.key, packet.pathHashSize || 1);
-  if (terminalObserverHop && path[path.length - 1] !== terminalObserverHop) {
-    path.push(terminalObserverHop);
+    broadcastSnapshot();
   }
 
   if (packet.payloadType !== MeshCorePayloadType.GroupText || !packet.payload?.decoded) {
@@ -2761,10 +2827,17 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   const groupPayload = packet.payload.decoded;
   if (!shouldDecodeChannel(testChannelHash, groupPayload.channelHash)) {
     logger.debug(
-      `[mqtt] ignore channel ${groupPayload.channelHash || 'unknown'} on ${shortKey(observer.key)}`,
+      `[mqtt] ignore channel ${groupPayload.channelHash || 'unknown'} on ${shortKey(normalizedObserverKey)}`,
     );
     return;
   }
+  if (!groupPayload.decrypted) {
+    logger.debug(
+      `[mqtt] target channel packet failed authenticated decode on ${shortKey(normalizedObserverKey)}`,
+    );
+    return;
+  }
+
   const decodedGroup = groupPayload?.decrypted
     ? {
         channelHash: groupPayload.channelHash,
@@ -2778,24 +2851,33 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
   const channelName = channelDisplay(channelHash);
   const messageBody = String(decodedGroup?.message || '').trim();
   const sender = String(decodedGroup?.sender || '').trim();
-  const messageHash = normalizeMessageHash(
-    envelope?.hash || envelope?.message_hash || envelope?.messageHash || packet.messageHash || '',
+  const messageHash = normalizeMessageHash(packet.messageHash || '');
+  const envelopeHash = normalizeMessageHash(
+    envelope?.hash || envelope?.message_hash || envelope?.messageHash || '',
   );
+  if (!messageHash || (envelopeHash && envelopeHash !== messageHash)) {
+    logger.debug(
+      `[mqtt] packet hash mismatch on ${shortKey(normalizedObserverKey)} (${envelopeHash || 'missing wrapper hash'} != ${messageHash || 'missing decoded hash'})`,
+    );
+    return;
+  }
 
-  if (!decodedGroup) {
-    logger.debug(
-      `[mqtt] target channel decode failed on ${shortKey(observer.key)} (${messageHash || 'no-hash'})`,
-    );
+  if (!messageBody || !sender) {
+    return;
   }
-  if (!messageHash) {
-    logger.debug(
-      `[mqtt] target channel packet missing message hash on ${shortKey(observer.key)}`,
-    );
+
+  const observer = touchObserver(normalizedObserverKey);
+  if (!observer) {
+    return;
   }
-  if (decodedGroup && !messageBody) {
-    logger.debug(
-      `[mqtt] target channel packet has empty message body on ${shortKey(observer.key)} (${messageHash || 'no-hash'})`,
-    );
+  noteObserverPacketActivity(observer.key);
+
+  const path = Array.isArray(packet.path)
+    ? packet.path.map((value) => normalizePathHop(value)).filter(Boolean)
+    : [];
+  const terminalObserverHop = observerPathHop(observer.key, packet.pathHashSize || 1);
+  if (terminalObserverHop && path[path.length - 1] !== terminalObserverHop) {
+    path.push(terminalObserverHop);
   }
 
   const packetInfo = {
@@ -2823,7 +2905,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     : channelName.toLowerCase() === testChannelName;
   const hadExistingMapping = messageHash ? messageToSession.has(messageHash) : false;
 
-  if (isTestChannel && messageBody) {
+  if (isTestChannel && messageBody && sender) {
     session = maybeMatchSession(packetInfo);
     if (session && !hadExistingMapping) {
       logger.info(
@@ -2834,9 +2916,6 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
         `[mqtt] target channel packet did not match any active code on ${shortKey(observer.key)} (${messageHash || 'no-hash'})`,
       );
     }
-  }
-  if (!session && messageHash && messageToSession.has(messageHash)) {
-    session = sessions.get(messageToSession.get(messageHash)) || null;
   }
   if (!session || session.status === 'expired') {
     return;
@@ -2857,7 +2936,7 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
       `[session] receipt ${session.code} from ${shortKey(packetInfo.observerKey)} (${messageHash || 'no-hash'})`,
     );
     scheduleResultsWrite();
-    broadcastSnapshot(true);
+    broadcastSessionUpdate(session.id);
   }
 }
 
@@ -2955,9 +3034,11 @@ app.post(
     const result = await verifyTurnstileToken(token, clientAddress(request));
     if (!result.success) {
       clearTurnstileCookie(request, response);
-      response.status(400).json({
+      response.status(result.error === 'verification_unavailable' ? 503 : 400).json({
         success: false,
-        error: result.error || 'verification_failed',
+        error: result.error === 'verification_unavailable'
+          ? 'verification_unavailable'
+          : 'verification_failed',
       });
       return;
     }
@@ -3008,6 +3089,23 @@ app.post(
   },
 );
 
+app.get('/api/sessions', (request, response) => {
+  const ids = dedupe(
+    String(request.query?.ids || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0 && value.length <= 128),
+  ).slice(0, 8);
+  response.json({
+    sessions: ids.map((sessionId) => {
+      const session = sessions.get(sessionId);
+      return session
+        ? { sessionId, session: serializeSession(session, request) }
+        : { sessionId, missing: true };
+    }),
+  });
+});
+
 app.get('/api/sessions/:sessionId', (request, response) => {
   const session = sessions.get(request.params.sessionId);
   if (!session) {
@@ -3026,7 +3124,14 @@ function sendLanding(request, response) {
 }
 
 function sendShare(request, response) {
-  response.type('html').send(renderHtmlTemplate(shareHtmlTemplate, request, 'Shared Result'));
+  // Share sessions are scoped to the expected observer set recorded at
+  // creation time; surface that scope so the map renders only the observers
+  // targeted by the selected region (Wave 3 BUG-013 fix).
+  const shareBody = shareHtmlTemplate.replace(
+    '<body class="noc-body" data-page-mode="share"',
+    '<body class="noc-body" data-page-mode="share" data-map-observer-scope="expected"',
+  );
+  response.type('html').send(renderHtmlTemplate(shareBody, request, 'Shared Result'));
 }
 
 app.get('/', (request, response) => {
@@ -3050,6 +3155,18 @@ app.get('/share/:sessionId', (request, response) => {
 });
 
 app.get(/.*/, (request, response) => {
+  const requestPath = request.path;
+  const isApiRoute = requestPath.startsWith('/api/');
+  const hasAssetExtension = path.extname(requestPath) !== '';
+  const acceptsHtml = request.accepts('html') === 'html';
+  if (isApiRoute || hasAssetExtension || !acceptsHtml) {
+    if (isApiRoute) {
+      response.status(404).json({ error: 'not_found' });
+    } else {
+      response.status(404).type('text/plain').send('Not found');
+    }
+    return;
+  }
   if (TURNSTILE_ENABLED && !hasTurnstileAccess(request)) {
     response.redirect('/');
     return;
@@ -3064,6 +3181,25 @@ let mqttClient = null;
 let mqttConnected = false;
 let lastSnapshotSentAt = 0;
 let pruneInterval = null;
+let wsHeartbeatTimer = null;
+
+function sendWebSocketPayload(payload) {
+  for (const client of wss.clients) {
+    if (client.readyState !== 1) {
+      continue;
+    }
+    if (client.bufferedAmount > MAX_WS_BUFFERED_BYTES) {
+      client.terminate();
+      continue;
+    }
+    try {
+      client.send(payload);
+    } catch (error) {
+      logger.debug(`[websocket] send failed: ${error.message || error}`);
+      client.terminate();
+    }
+  }
+}
 
 function broadcastSnapshot(force = false) {
   const now = Date.now();
@@ -3075,14 +3211,22 @@ function broadcastSnapshot(force = false) {
     type: 'snapshot',
     data: snapshotPayload(),
   });
-  for (const client of wss.clients) {
-    if (client.readyState === 1) {
-      client.send(payload);
-    }
-  }
+  sendWebSocketPayload(payload);
+}
+
+function broadcastSessionUpdate(sessionId) {
+  const payload = JSON.stringify({
+    type: 'session-update',
+    data: { sessionId: String(sessionId || '') },
+  });
+  sendWebSocketPayload(payload);
 }
 
 wss.on('connection', (socket) => {
+  socket.isAlive = true;
+  socket.on('pong', () => {
+    socket.isAlive = true;
+  });
   socket.send(JSON.stringify({
     type: 'snapshot',
     data: snapshotPayload(),
@@ -3090,10 +3234,36 @@ wss.on('connection', (socket) => {
 });
 
 server.on('upgrade', (request, socket, head) => {
+  if (wss.clients.size >= MAX_WS_CONNECTIONS) {
+    socket.write('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+    socket.destroy();
+    return;
+  }
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request);
   });
 });
+
+function startWebSocketHeartbeat() {
+  if (wsHeartbeatTimer) {
+    return;
+  }
+  wsHeartbeatTimer = setInterval(() => {
+    for (const client of wss.clients) {
+      if (client.isAlive === false) {
+        client.terminate();
+        continue;
+      }
+      client.isAlive = false;
+      try {
+        client.ping();
+      } catch {
+        client.terminate();
+      }
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
+  wsHeartbeatTimer.unref?.();
+}
 
 function startMqtt() {
   const options = {
@@ -3156,11 +3326,12 @@ function startRuntime() {
   pruneInterval = setInterval(() => {
     const changed = pruneState();
     if (changed) {
-      broadcastSnapshot(true);
+      broadcastSnapshot();
     } else {
       broadcastSnapshot(false);
     }
   }, 10000);
+  startWebSocketHeartbeat();
   startMqtt();
 
   server.listen(PORT, () => {
@@ -3170,11 +3341,50 @@ function startRuntime() {
         testChannelHash ? `#${testChannelName} (${testChannelHash})` : `#${testChannelName}`
       }`,
     );
-    if (!decoderKeyCandidates.length) {
+    if (!meshPacketDecoderKeyStore) {
       logger.warn('[web] no decoder key configured for the test channel');
     }
     logger.info(`[web] log level ${logger.level}`);
   });
+}
+
+let shuttingDown = false;
+
+async function shutdownRuntime(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  logger.info(`[web] shutting down on ${signal}`);
+  if (pruneInterval) {
+    clearInterval(pruneInterval);
+    pruneInterval = null;
+  }
+  if (wsHeartbeatTimer) {
+    clearInterval(wsHeartbeatTimer);
+    wsHeartbeatTimer = null;
+  }
+  for (const client of wss.clients) {
+    client.terminate();
+  }
+  if (mqttClient) {
+    const client = mqttClient;
+    mqttClient = null;
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 5000);
+      client.end(true, () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+  }
+  await Promise.race([
+    flushScheduledWritesAsync(),
+    new Promise((resolve) => setTimeout(resolve, 5000)),
+  ]);
+  if (server.listening) {
+    await new Promise((resolve) => server.close(() => resolve()));
+  }
 }
 
 export function resetTestState() {
@@ -3203,7 +3413,7 @@ export { flushScheduledWrites };
 export function ingestMqttMessage(topic, payload) {
   const parts = String(topic || '').split('/');
   const streamType = parts[parts.length - 1] || '';
-  const observerKey = parts[parts.length - 2] || '';
+  const observerKey = normalizeObserverKey(parts[parts.length - 2] || '');
   if (!observerKey) {
     return;
   }
@@ -3213,7 +3423,7 @@ export function ingestMqttMessage(topic, payload) {
   }
   if (streamType === 'status' || streamType === 'internal') {
     if (handleObserverMetadata(topic, observerKey, payload)) {
-      broadcastSnapshot(true);
+      broadcastSnapshot();
     }
   }
 }
@@ -3228,5 +3438,7 @@ export {
 };
 
 if (IS_MAIN_MODULE && !DISABLE_RUNTIME) {
+  process.once('SIGTERM', () => { void shutdownRuntime('SIGTERM'); });
+  process.once('SIGINT', () => { void shutdownRuntime('SIGINT'); });
   startRuntime();
 }

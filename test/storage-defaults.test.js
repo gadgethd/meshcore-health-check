@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -56,6 +58,70 @@ test('default persistent file paths resolve under data/', async () => {
       delete process.env.RESULTS_FILE;
     } else {
       process.env.RESULTS_FILE = original.RESULTS_FILE;
+    }
+  }
+});
+
+test('observer retention defaults to disabled when unset', async () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mesh-health-retention-default-test-'));
+  const observerFile = path.join(tempDir, 'observer.json');
+  const observerActivityFile = path.join(tempDir, 'observer-activity.json');
+  const resultsFile = path.join(tempDir, 'session-results.json');
+  fs.writeFileSync(observerFile, '{}\n', 'utf8');
+  fs.writeFileSync(observerActivityFile, '{\n  "version": 1,\n  "observers": {}\n}\n', 'utf8');
+  fs.writeFileSync(resultsFile, '{\n  "version": 1,\n  "sessions": []\n}\n', 'utf8');
+
+  const envNames = [
+    'MESH_HEALTH_DISABLE_RUNTIME',
+    'TURNSTILE_ENABLED',
+    'OBSERVERS_FILE',
+    'OBSERVER_ACTIVITY_FILE',
+    'RESULTS_FILE',
+    'OBSERVER_RETENTION_SECONDS',
+    'KNOWN_OBSERVERS',
+  ];
+  const previousEnv = Object.fromEntries(envNames.map((name) => [name, process.env[name]]));
+  process.env.MESH_HEALTH_DISABLE_RUNTIME = 'true';
+  process.env.TURNSTILE_ENABLED = 'false';
+  process.env.OBSERVERS_FILE = observerFile;
+  process.env.OBSERVER_ACTIVITY_FILE = observerActivityFile;
+  process.env.RESULTS_FILE = resultsFile;
+  delete process.env.OBSERVER_RETENTION_SECONDS;
+  delete process.env.KNOWN_OBSERVERS;
+
+  const serverModule = await import(
+    `${pathToFileURL(path.join(REPO_DIR, 'server.js')).href}?retention-default=${Date.now()}`
+  );
+  const { flushScheduledWrites, server } = serverModule;
+  let baseUrl = '';
+  try {
+    await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = server.address();
+    baseUrl = `http://127.0.0.1:${address.port}`;
+    const response = await fetch(`${baseUrl}/api/bootstrap`);
+    assert.equal(response.status, 200);
+    const payload = await response.json();
+    assert.equal(payload.observerStats.retentionSeconds, 0);
+  } finally {
+    flushScheduledWrites();
+    await new Promise((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    for (const [name, value] of Object.entries(previousEnv)) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
     }
   }
 });
