@@ -31,7 +31,7 @@ function mapBootstrap(observerDirectory) {
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.3.7',
+      version: '1.3.8',
       repoUrl: 'https://github.com/yellowcooln/meshcore-health-check',
       changesUrl: 'https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md',
     },
@@ -205,6 +205,55 @@ test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {
 
   await expect(page.locator('#map-observer-note')).toHaveText('0/1 mapped observers reached.');
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+});
+
+for (const surface of ['app', 'share']) {
+  test(`${surface} map loads same-origin tiles and keeps both themes and attribution`, async ({ page }) => {
+    const violations = [];
+    page.on('console', (message) => {
+      if (message.text().startsWith('map-csp:')) violations.push(message.text());
+    });
+    await page.addInitScript(() => {
+      localStorage.setItem('mesh-health-check-ui-theme', 'dark');
+      document.addEventListener('securitypolicyviolation', (event) => {
+        console.log(`map-csp:${event.violatedDirective}:${event.blockedURI}`);
+      });
+    });
+    if (surface === 'share') {
+      const observer = mapObserver(MAP_TEST_KEYS.target, 'London Observer', 51.5074, -0.1278, 'UK');
+      await openMockMapSession(page, [observer], [observer]);
+    } else {
+      await page.goto('/app');
+    }
+    const map = page.locator('#observer-map');
+    await map.scrollIntoViewIfNeeded();
+    for (const theme of ['dark', 'light']) {
+      const layer = map.locator(`.observer-basemap-${theme}`);
+      await expect(layer).toBeAttached();
+      await expect.poll(() => layer.locator('img.leaflet-tile').evaluateAll((tiles) => (
+        tiles.length > 0 && tiles.every((tile) => tile.complete && tile.naturalWidth === 256)
+      )), { timeout: 20000 }).toBe(true);
+      await expect(layer.locator('img.leaflet-tile').first()).toBeVisible();
+      const urls = await layer.locator('img.leaflet-tile').evaluateAll((tiles) => tiles.map((tile) => tile.src));
+      expect(urls.every((url) => /^http:\/\/127\.0\.0\.1:3091\/tiles\/osm\/\d+\/\d+\/\d+\.png$/.test(url))).toBe(true);
+      const filter = await layer.evaluate((element) => getComputedStyle(element).filter);
+      expect(filter === 'none').toBe(theme === 'light');
+      await expect(map.locator('.leaflet-marker-pane')).toHaveCSS('filter', 'none');
+      await expect(map.getByRole('link', { name: 'OpenStreetMap contributors' })).toHaveAttribute(
+        'href', 'https://www.openstreetmap.org/copyright',
+      );
+      if (theme === 'dark') await page.locator('#ui-theme-toggle').click();
+    }
+    expect(violations).toEqual([]);
+  });
+}
+
+test('coverage map stays usable without observer coordinates', async ({ page }) => {
+  await openMockMapSession(page, [], []);
+  await expect(page.locator('#map-observer-note')).toContainText('No observer coordinates yet.');
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(0);
+  await expect(page.locator('#observer-map .leaflet-control-zoom')).toBeVisible();
+  await expect(page.locator('#observer-map .leaflet-tile-loaded').first()).toBeVisible();
 });
 
 test('escapes untrusted observer labels in timeline and map popups', async ({ page }) => {

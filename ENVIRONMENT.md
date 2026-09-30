@@ -13,7 +13,7 @@ in source files.
 | `APP_EYEBROW` | `MeshCore Observer Coverage` | Small hero/dashboard label. |
 | `APP_HEADLINE` | `Check your mesh reach.` | Hero headline on the dashboard. |
 | `APP_DESCRIPTION` | Generated coverage description | Site description and social metadata. |
-| `SITE_URL` | blank | Public site URL used for generated absolute share links and social metadata. Set this when running behind a reverse proxy. |
+| `SITE_URL` | blank | Public site URL used for generated absolute share links, social metadata, and the identifying User-Agent/Referer on server-side OpenStreetMap tile requests. Set this to the public HTTPS origin behind a reverse proxy. No map API key is required. |
 | `CORESCOPE_URL` | blank | Optional CoreScope root URL. When set, matched message hashes link to `#/packets/<hash>`. |
 | `EXTERNAL_LINK_URL` | blank | Optional HTTP(S) hero/control-center external link URL. Other URL schemes are rejected. |
 | `EXTERNAL_LINK_LABEL` | blank | Label for the optional external link. |

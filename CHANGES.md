@@ -1,6 +1,17 @@
 # Changes
 
-## Unreleased
+## v1.3.8
+
+- replaced CARTO raster tiles, which now display an API-key watermark, with
+  keyless OpenStreetMap tiles through the app's same-origin `/tiles/osm/` route
+- kept dark and light maps on dashboard and share pages, using a dark filter
+  only on the basemap and linked OpenStreetMap attribution
+- added an identifying User-Agent/Referer using the existing `SITE_URL`, bounded
+  tile caching, conditional revalidation, upstream request limits and PNG checks
+- restricted map images to the app origin, restored an origin-preserving
+  Referrer-Policy, and kept tile requests out of the PWA asset cache
+- versioned dashboard/share assets and advanced the service worker cache so
+  installed clients can receive the map repair
 
 - hardened WebSocket upgrades with tolerant origin validation, configurable
   payload/rate/global/per-IP limits, isolated excess-client closure, and a
