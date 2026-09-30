@@ -150,7 +150,7 @@ test('bootstrap exposes grouped region hierarchy for observer filters', async ()
     assert.equal(fallbackObserver?.region, 'Outside Census places');
     assert.equal(fallbackObserver?.regionGroup, 'North');
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -278,7 +278,7 @@ test('bootstrap falls back to flat region filters when boundaries have no group 
       },
     ]);
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {

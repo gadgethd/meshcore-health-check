@@ -13,6 +13,11 @@
 - versioned dashboard/share assets and advanced the service worker cache so
   installed clients can receive the map repair
 
+- hardened WebSocket upgrades with tolerant origin validation, configurable
+  payload/rate/global/per-IP limits, isolated excess-client closure, and a
+  broadcast-only inbound path that cannot mutate application state
+- made retained session-result persistence strictly atomic and serialized with
+  unique same-directory temporary files while preserving the version 1 format
 - validated MQTT observer and packet inputs before attribution, constrained
   receipt matching to decoded packet identity, batched WebSocket session
   refreshes, and bounded connection and buffer growth
