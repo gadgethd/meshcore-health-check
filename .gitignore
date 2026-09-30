@@ -35,3 +35,4 @@ test-results/
 *.bak
 *.orig
 .tokensave/
+.fix-backups-healthmaps-20260908/

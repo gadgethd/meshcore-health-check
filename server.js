@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import express from 'express';
 import mqtt from 'mqtt';
 import { WebSocketServer } from 'ws';
+import { createTileRouter } from './lib/tile-proxy.js';
 import {
   calculateChannelHash,
   normalizeHex,
@@ -1460,7 +1461,8 @@ function renderHtmlTemplate(template, request, pageTitleSuffix = '') {
     .replaceAll('__APP_META_TITLE__', escapeHtml(title))
     .replaceAll('__APP_META_DESCRIPTION__', escapeHtml(description))
     .replaceAll('__APP_META_URL__', escapeHtml(url))
-    .replaceAll('__APP_META_IMAGE__', escapeHtml(imageUrl));
+    .replaceAll('__APP_META_IMAGE__', escapeHtml(imageUrl))
+    .replaceAll('__APP_VERSION__', escapeHtml(APP_VERSION));
 }
 
 function clientAddress(requestLike) {
@@ -2945,7 +2947,7 @@ app.use(express.json());
 app.use((request, response, next) => {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
-  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   response.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
   if (request.path.startsWith('/api/') || request.path.startsWith('/share/')) {
     response.setHeader('Cache-Control', 'no-store');
@@ -2959,7 +2961,7 @@ app.use((request, response, next) => {
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src https://challenges.cloudflare.com",
-      "img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com",
+      "img-src 'self' data:",
       "object-src 'none'",
       "script-src 'self' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
@@ -3000,6 +3002,13 @@ app.get('/manifest.webmanifest', (request, response) => {
     ],
   }));
 });
+app.use('/tiles', (request, response, next) => {
+  response.set('Cache-Control', 'no-store');
+  next();
+}, rateLimit('map-tiles', 600, 60000), createTileRouter({
+  siteUrl: SITE_URL,
+  userAgent: `MeshHealthCheck/${APP_VERSION} (+${SITE_URL || REPO_URL})`,
+}));
 app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leaflet/dist'), { index: false }));
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 
