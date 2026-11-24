@@ -94,7 +94,7 @@ test('bootstrap includes configured default observers even when only some are re
     assert.equal(staleDefault?.isRetained, false);
     assert.equal(staleDefault?.isActive, false);
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -196,7 +196,7 @@ test('observer retention can be disabled with OBSERVER_RETENTION_SECONDS=0', asy
     assert.equal(observer?.isRetained, true);
   } finally {
     Date.now = realNow;
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -293,7 +293,7 @@ test('saved observer profile names are not overridden by lower-quality mqtt meta
     assert.equal(observer?.label, 'Pinned Observer Name');
     assert.equal(observer?.name, 'Pinned Observer Name');
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -406,7 +406,7 @@ test('bootstrap falls back to the top recent observers when KNOWN_OBSERVERS is b
     assert.equal(payload.observerStats.topWindowDays, 7);
     assert.equal(payload.observerStats.topCount, 10);
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -489,7 +489,7 @@ test('observer hash prefixes follow OBSERVER_HASH_DISPLAY_BYTES', async () => {
     assert.equal(payload.observerStats.hashDisplayBytes, 2);
     assert.equal(payload.defaultObservers[0]?.hash, 'AF07');
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     await new Promise((resolve, reject) => {
       server.close((error) => {
         if (error) {

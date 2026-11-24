@@ -55,7 +55,7 @@ test('rate limiting ignores forwarded addresses when trust proxy is disabled', a
     assert.equal(first.status, 201);
     assert.equal(second.status, 429);
   } finally {
-    flushScheduledWrites();
+    await flushScheduledWrites();
     if (server.listening) {
       await new Promise((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());

@@ -1,10 +1,14 @@
 import { createCipheriv, createHmac } from 'node:crypto';
+import { createRequire } from 'node:module';
 
 import {
   calculateChannelHash,
   encodePathHops,
   normalizeHex,
 } from '../../lib/mesh-health-core.js';
+
+const require = createRequire(import.meta.url);
+const { MeshCorePacketDecoder } = require('@michaelhart/meshcore-decoder');
 
 function encryptAesEcb(aesKey, plaintext) {
   const cipher = createCipheriv('aes-128-ecb', aesKey, null);
@@ -52,10 +56,13 @@ export function buildGroupTextEnvelope({
 
   const header = Buffer.from([0x15, pathLenByte]);
   const packetBytes = Buffer.concat([header, pathBytes, payloadBytes]);
+  const raw = packetBytes.toString('hex');
+  const canonicalHash = MeshCorePacketDecoder.decode(raw)?.messageHash || '';
 
   return {
-    raw: packetBytes.toString('hex'),
-    hash: messageHash,
+    raw,
+    hash: canonicalHash,
+    wrapperHash: messageHash,
     rssi,
     snr,
     duration,
