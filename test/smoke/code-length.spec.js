@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { mockSessionReads } from './session-fixture.js';
 
 for (const used of [false, true]) {
   test(`slider affects only new codes with ${used ? 'used' : 'waiting'} current results`, async ({ page, context }) => {
@@ -22,7 +23,7 @@ for (const used of [false, true]) {
     const initial = await (await page.request.get('/api/sessions/' + await page.evaluate(() => sessionStorage.getItem('mesh-health-check-session-id')))).json();
     if (used) {
       const retained = { ...initial, status: 'active', useCount: 1, observedCount: 1, healthPercent: 50, healthLabel: 'FAIR', messageBody: code };
-      await page.route(`**/api/sessions/${initial.id}`, route => route.fulfill({ json: retained }));
+      await mockSessionReads(page, retained);
       await page.reload();
       await expect(page.locator('#health-label')).toHaveText('FAIR');
     }

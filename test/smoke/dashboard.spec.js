@@ -1,4 +1,10 @@
 import { expect, test } from '@playwright/test';
+import { mockSessionReads } from './session-fixture.js';
+
+const TILE_RESPONSE = {
+  contentType: 'image/svg+xml',
+  body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#101820"/></svg>',
+};
 
 test('default install hides longer-code controls and generates six hex characters', async ({ page }) => {
   await page.goto('/app');
@@ -21,7 +27,7 @@ test('MeshCore scope observations render safely in Details, receipt info and sha
   const retained = {...session, status:'active', useCount:1, observedCount:1, receipts:[{
     observerKey:'1'.repeat(64), observerLabel:'Synthetic scope observer', observerShortKey:'111111', observerHash:'11', firstSeenAt:Date.now(), lastSeenAt:Date.now(), count:6, path:[], meshcoreScopes:scopes,
   }]};
-  await page.route('**/api/sessions/' + id, route => route.fulfill({json:retained}));
+  await mockSessionReads(page, retained);
   await page.reload();
   await page.locator('#session-details > summary').click();
   await expect(page.locator('#meshcore-scopes')).toContainText(dangerous);
@@ -75,18 +81,25 @@ async function openNearbyFixture(page, { mode = 'success', rows, bootstrapOverri
     } });
     if (mode === 'insecure') Object.defineProperty(window, 'isSecureContext', { value: false });
   }, mode);
+  // Geographic selection keeps the actual renderer while provider data is fixed.
+  await page.route('https://tiles.openfreemap.org/styles/dark', route => route.fulfill({ json: {
+    version: 8, sources: {}, layers: [{ id: 'background', type: 'background', paint: { 'background-color': '#101820' } }],
+  } }));
+  await page.route('**/tiles/osm/**', route => route.fulfill(TILE_RESPONSE));
   const bootstrap = mapBootstrap(observers, '');
   await page.route('**/api/bootstrap', (route) => route.fulfill({ json: {
     ...bootstrap, ...bootstrapOverrides,
     observerStats: { ...bootstrap.observerStats, ...bootstrapOverrides.observerStats },
   } }));
   let session;
-  await page.route('**/api/sessions', (route) => {
+  await page.route('**/api/sessions', async (route) => {
     const keys = route.request().postDataJSON().expectedObserverKeys;
     session = { ...mapSession(keys.length ? observers.filter((o) => keys.includes(o.key)) : observers), status: 'waiting' };
+    await mockSessionReads(page, () => session);
     return route.fulfill({ json: session });
   });
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session }));
+  session = { ...mapSession(observers), status: 'waiting' };
+  await mockSessionReads(page, () => session);
   await page.goto('/app');
   await expect(page.locator('#session-code')).toContainText('MHC-');
   await page.locator('#observer-customization > summary').click();
@@ -95,17 +108,17 @@ async function openNearbyFixture(page, { mode = 'success', rows, bootstrapOverri
 
 test('channel guidance stays beside copy code outside collapsed details', async ({ page }) => {
   await openNearbyFixture(page);
-  const guidance = page.locator('.session-sequence .dock-lede');
+  const guidance = page.locator('#session-instructions');
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     await expect(page.locator('#session-details')).not.toHaveAttribute('open');
     await expect(guidance).toBeVisible();
-    await expect(guidance).toContainText('Generate a test code, send it to');
-    await expect(guidance.locator('#hero-channel')).toHaveText('#health-check');
+    await expect(guidance).toContainText('Send MHC-MAP123 to #health-check');
+    await expect(page.locator('#hero-channel')).toHaveText('#health-check');
     await expect(page.locator('#session-details #hero-channel')).toHaveCount(0);
     const layout = await page.evaluate(() => {
       const copy = document.querySelector('.session-code-actions').getBoundingClientRect();
-      const guide = document.querySelector('.session-sequence .dock-lede').getBoundingClientRect();
+      const guide = document.querySelector('#session-instructions').getBoundingClientRect();
       return { gap: guide.top - copy.bottom, overflow: document.documentElement.scrollWidth > innerWidth };
     });
     expect(layout.gap).toBeGreaterThanOrEqual(0);
@@ -179,9 +192,9 @@ test('score guidance on an unconfigured global instance makes no region claim', 
 for (const enabled of [true, false]) {
   test(`browser location ${enabled} preserves shared historical targets without requests`, async ({ page }) => {
     const observers = await openNearbyFixture(page, { bootstrapOverrides: { observerStats: { browserLocationEnabled: enabled, windowSeconds: 900 } } });
-    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: {
+    await mockSessionReads(page, {
       ...mapSession([observers[0]]), useCount: 1, observedCount: 1, healthPercent: 100, healthLabel: 'EXCELLENT',
-    } }));
+    });
     await page.goto('/share/map-session');
     await expect(page.locator('#health-percent')).toHaveText('100%');
     await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
@@ -472,7 +485,7 @@ for (const used of [false, true]) {
     expect((await mappedState(page)).markers).toHaveLength(5);
     if (used) {
       const historical = { ...mapSession(rows.slice(0, 5)), status: 'active', useCount: 1 };
-      await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: historical }));
+      await mockSessionReads(page, historical);
       await page.reload();
       await page.locator('#observer-customization > summary').click();
       await expect(page.locator('#observed-count')).toHaveText('0 / 5');
@@ -496,7 +509,7 @@ for (const used of [false, true]) {
 test('used code keeps its targets and measured score until a new code uses the selection', async ({ page }) => {
   const rows = await openNearbyFixture(page);
   const used = { ...mapSession([rows[0]]), useCount: 1, status: 'active', healthPercent: 100, healthLabel: 'VERY HEALTHY', observedCount: 1 };
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: used }));
+  await mockSessionReads(page, used);
   const posts = [];
   page.on('request', (request) => {
     if (request.url().endsWith('/api/sessions') && request.method() === 'POST') posts.push(request.postDataJSON());
@@ -537,7 +550,7 @@ test('reload resets nearby and stale storage to website defaults', async ({ page
 test('reload preserves a used session without restoring its custom selection', async ({ page }) => {
   const rows = await openNearbyFixture(page);
   const used = { ...mapSession([rows[0]]), useCount: 1, status: 'active' };
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: used }));
+  await mockSessionReads(page, used);
   let posts = 0;
   page.on('request', (request) => {
     if (request.url().endsWith('/api/sessions') && request.method() === 'POST') posts++;
@@ -754,20 +767,7 @@ async function openMockMapSession(
     contentType: 'application/json',
     body: JSON.stringify(mapBootstrap(observerDirectory, cartoBasemapKey)),
   }));
-  await page.route('**/api/sessions*', (route) => {
-    if (route.request().method() === 'GET') {
-      return route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({
-          sessions: [{
-            sessionId: 'map-session',
-            session: mapSession(expectedObservers),
-          }],
-        }),
-      });
-    }
-    return route.continue();
-  });
+  await mockSessionReads(page, mapSession(expectedObservers));
   await page.goto('/share/map-session');
 }
 
@@ -782,7 +782,7 @@ for (const [name, evidence, scored] of [
     const target = mapObserver(MAP_TEST_KEYS.target, 'Historical target', 42, -71, 'BOS');
     const other = mapObserver(MAP_TEST_KEYS.outside, 'Other observer', 48, 2, 'CDG');
     await openMockMapSession(page, [target, other], [target]);
-    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: { ...mapSession([target]), ...evidence } }));
+    await mockSessionReads(page, { ...mapSession([target]), ...evidence });
     await page.reload();
     await expect(page.locator('#health-label')).toHaveText(scored ? 'POOR' : 'Awaiting message');
     await expect(page.locator('#health-percent')).toHaveText(scored ? '0%' : '--');
@@ -805,15 +805,15 @@ test('signal quality distinguishes waiting from unavailable data and reported re
     { useCount: 1 },
     { observedCount: 1, receipts: [receipt] },
   ]) {
-    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: { ...mapSession([target]), ...evidence } }));
+    await mockSessionReads(page, { ...mapSession([target]), ...evidence });
     await page.reload();
     await expect(page.locator('#signal-quality')).toHaveText('--');
     await expect(page.locator('#signal-quality-label')).toHaveText('Signal data unavailable.');
   }
 
-  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: {
+  await mockSessionReads(page, {
     ...mapSession([target]), matchedAt: Date.now(), receipts: [{ ...receipt, rssi: -90, snr: 0 }],
-  } }));
+  });
   await page.reload();
   await expect(page.locator('#signal-quality')).toHaveText(/\d+%/);
   await expect(page.locator('#signal-quality-label')).not.toHaveText(/Awaiting|unavailable/);
@@ -852,7 +852,7 @@ test('dashboard loads and creates a session code', async ({ page }) => {
   await expect(page).toHaveTitle(/MeshCore Observer Coverage/i);
   await expect(page.getByText('MeshCore Observer Coverage')).toBeVisible();
   await expect(page.getByRole('button', { name: 'New Code' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'yellowcooln/meshcore-health-check' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'gadgethd/meshcore-health-check' })).toBeVisible();
   await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
   await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
   await expect(page.getByText('Where the observers are')).toBeVisible();
@@ -873,7 +873,7 @@ test('dashboard reports a retry state when bootstrap returns a non-JSON error', 
   await page.goto('/app');
 
   await expect(page.locator('#transport-status')).toHaveText(
-    'Dashboard connection unavailable — retrying.',
+    'Dashboard connection unavailable. Retrying.',
   );
   await expect(page.locator('#session-instructions')).toHaveText(
     'Dashboard temporarily unavailable. Retrying…',
@@ -943,13 +943,17 @@ test('CARTO tiles send only the origin while the dashboard retains no-referrer',
   const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
   const cartoRequests = [];
   const osmReferrers = [];
+  const directOsmRequests = [];
+  page.on('request', request => {
+    if (new URL(request.url()).hostname.endsWith('.tile.openstreetmap.org')) directOsmRequests.push(request.url());
+  });
   await page.route('https://*.basemaps.cartocdn.com/**', async (route) => {
     cartoRequests.push({ url: route.request().url(), referer: await route.request().headerValue('referer') });
-    await route.abort();
+    await route.fulfill(TILE_RESPONSE);
   });
-  await page.route('https://*.tile.openstreetmap.org/**', async (route) => {
+  await page.route('**/tiles/osm/**', async (route) => {
     osmReferrers.push(await route.request().headerValue('referer'));
-    await route.abort();
+    await route.fulfill(TILE_RESPONSE);
   });
 
   await openMockMapSession(page, [target], [target]);
@@ -968,6 +972,9 @@ test('CARTO tiles send only the origin while the dashboard retains no-referrer',
   await page.locator('#ui-theme-toggle').click();
   await expect.poll(() => osmReferrers.length).toBeGreaterThan(0);
   expect(osmReferrers.every((referer) => referer === null)).toBe(true);
+  expect(directOsmRequests).toEqual([]);
+  await expect(page.locator('#observer-map img.leaflet-tile').first()).toHaveAttribute('src', /\/tiles\/osm\//);
+  await expect.poll(() => page.locator('#observer-map img.leaflet-tile').first().evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
 });
 
 test('keyless dark map renders with real MapLibre and releases canvases on theme changes', async ({ page }) => {
@@ -1033,6 +1040,10 @@ for (const failure of ['unsupported WebGL', 'bridge factory', 'renderer construc
     const target = mapObserver(MAP_TEST_KEYS.target, 'Fallback Observer', 42.3601, -71.0589, 'BOS');
     const errors = [];
     const osmRequests = [];
+    const directOsmRequests = [];
+    page.on('request', request => {
+      if (new URL(request.url()).hostname.endsWith('.tile.openstreetmap.org')) directOsmRequests.push(request.url());
+    });
     page.on('pageerror', (error) => errors.push(error.message));
     if (failure === 'unsupported WebGL') {
       await page.addInitScript(() => {
@@ -1064,9 +1075,9 @@ for (const failure of ['unsupported WebGL', 'bridge factory', 'renderer construc
     await page.route('https://tiles.openfreemap.org/**', (route) => failure === 'provider'
       ? route.fulfill({ status: 503, body: 'Provider unavailable' })
       : route.fulfill({ json: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#101820' } }] } }));
-    await page.route('https://*.tile.openstreetmap.org/**', (route) => {
+    await page.route('**/tiles/osm/**', (route) => {
       osmRequests.push(route.request().url());
-      return route.abort();
+      return route.fulfill(TILE_RESPONSE);
     });
     await captureMap(page);
     await openMockMapSession(page, [target], [target], '');
@@ -1074,6 +1085,8 @@ for (const failure of ['unsupported WebGL', 'bridge factory', 'renderer construc
       await expect.poll(() => page.evaluate(() => window.__failureInjected)).toBe(true);
     }
     await expect.poll(() => osmRequests.length).toBeGreaterThan(0);
+    expect(directOsmRequests).toEqual([]);
+    await expect.poll(() => page.locator('#observer-map img.leaflet-tile').first().evaluate(img => img.complete && img.naturalWidth > 0)).toBe(true);
     await expect(page.locator('#observer-map canvas')).toHaveCount(0);
     await expect(page.locator('#observer-map .leaflet-gl-layer')).toHaveCount(0);
     await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
@@ -1222,6 +1235,7 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
     });
   });
 
+  await mockSessionReads(page, session);
   await page.goto('/app');
   await expect(page.locator('#session-code')).toHaveText('MHC-XSS123');
   await expect(page.locator('#session-hash')).toHaveAttribute(

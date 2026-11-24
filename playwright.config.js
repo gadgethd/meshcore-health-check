@@ -30,7 +30,7 @@ export default defineConfig({
     },
     {
       name: 'dashboard',
-      testMatch: /(?:dashboard|guided)\.spec\.js/,
+      testMatch: /(?:^|[\\/])(?:dashboard|guided)\.spec\.js$/,
       use: {
         baseURL: 'http://127.0.0.1:3091',
         serviceWorkers: 'block',
