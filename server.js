@@ -9,12 +9,14 @@ import {
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
+import { loadMeshcoreScopes, recognizeMeshcoreScope, recordedMeshcoreScopes } from './lib/meshcore-scopes.js';
 import express from 'express';
 import mqtt from 'mqtt';
-import { WebSocket, WebSocketServer } from 'ws';
+import { createWebSocketHub } from './lib/websocket-hub.js';
 import { createTileRouter } from './lib/tile-proxy.js';
 import {
   calculateChannelHash,
+  parsePacketHex,
   normalizeHex,
   normalizeKey,
   normalizeLogLevel,
@@ -81,6 +83,8 @@ function envValue(name, fallback = '') {
   }
   return fallback;
 }
+
+const meshcoreScopes = loadMeshcoreScopes(envValue('MESHCORE_REGION_SCOPES_FILE'));
 
 function envNumber(name, fallback) {
   const raw = envValue(name, '');
@@ -177,6 +181,11 @@ function normalizeWebSocketPath(value) {
     return '/';
   }
   return candidate;
+}
+
+function normalizeCodePrefix(value) {
+  const trimmed = String(value || '').trim();
+  return /^[A-Za-z0-9]{1,8}$/.test(trimmed) ? trimmed.toUpperCase() : 'MHC';
 }
 
 function normalizeDistanceUnit(value) {
@@ -371,16 +380,24 @@ const RESULTS_FILE = envValue('RESULTS_FILE', path.join('data', 'session-results
 const RESULTS_FILE_PATH = resolveAppPath(RESULTS_FILE);
 const APP_TITLE = envValue('APP_TITLE', 'Mesh Health Check');
 const APP_EYEBROW = envValue('APP_EYEBROW', 'MeshCore Observer Coverage');
-const APP_HEADLINE = envValue('APP_HEADLINE', 'Check your mesh reach.');
+const APP_HEADLINE = envValue('APP_HEADLINE', 'MeshCore radio coverage check');
 const APP_DESCRIPTION = envValue(
   'APP_DESCRIPTION',
   'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
 );
 const SITE_URL = normalizeSiteUrl(envValue('SITE_URL', ''));
 const CORESCOPE_URL = normalizeSiteUrl(envValue('CORESCOPE_URL', ''));
+const CARTO_BASEMAP_KEY = envValue('CARTO_BASEMAP_KEY', '');
 const DISTANCE_UNIT = normalizeDistanceUnit(envValue('DISTANCE_UNIT', 'mi'));
+const CODE_PREFIX = normalizeCodePrefix(envValue('CODE_PREFIX', 'MHC'));
+const BROWSER_LOCATION_ENABLED = envBool('BROWSER_LOCATION_ENABLED', true);
+const ALLOW_LONGER_TEST_CODES = envBool('ALLOW_LONGER_TEST_CODES', false);
+const NEARBY_DEFAULT_RADIUS = Number(envValue('NEARBY_DEFAULT_RADIUS', '100'));
+if (![5, 10, 15, 20, 25, 50, 75, 100, 150, 200].includes(NEARBY_DEFAULT_RADIUS)) {
+  throw new Error('NEARBY_DEFAULT_RADIUS must be one of 5, 10, 15, 20, 25, 50, 75, 100, 150, 200 (in DISTANCE_UNIT)');
+}
 const PWA_APP_NAME = 'Mesh Reach';
-const REPO_URL = 'https://github.com/yellowcooln/meshcore-health-check';
+const REPO_URL = 'https://github.com/gadgethd/meshcore-health-check';
 const EXTERNAL_LINK_URL = normalizeSiteUrl(envValue('EXTERNAL_LINK_URL', ''));
 const EXTERNAL_LINK_LABEL = envValue('EXTERNAL_LINK_LABEL', '');
 const DASH_BROKER_HOST = envValue('DASH_BROKER_HOST', '');
@@ -443,12 +460,13 @@ const SESSION_RATE_MAX = Math.max(
 );
 const RATE_LIMIT_BUCKET_MAX = Math.max(
   100,
-  Math.round(envNumber('RATE_LIMIT_BUCKET_MAX', 10000)),
+  Math.round(Math.min(envNumber('RATE_LIMIT_BUCKET_MAX', 10000), envNumber('MAX_RATE_LIMIT_BUCKETS', Number.POSITIVE_INFINITY))),
 );
 const WEBSOCKET_PATH = normalizeWebSocketPath(envValue('WEBSOCKET_PATH', '/'));
 const WEBSOCKET_ALLOWED_ORIGINS = dedupe(
   [
     ...envList('WEBSOCKET_ALLOWED_ORIGINS'),
+    ...envList('WS_ALLOWED_ORIGINS'),
     SITE_URL,
   ]
     .map(normalizeHttpOrigin)
@@ -464,26 +482,26 @@ const WEBSOCKET_TOKEN_TTL_SECONDS = Math.max(
 );
 const WEBSOCKET_GLOBAL_CAP = Math.max(
   1,
-  Math.round(envNumber('WEBSOCKET_GLOBAL_CAP', 200)),
+  Math.round(Math.min(envNumber('WEBSOCKET_GLOBAL_CAP', 200), envNumber('MAX_WS_CONNECTIONS', Number.POSITIVE_INFINITY))),
 );
 const WEBSOCKET_PER_IP_CAP = Math.max(
   1,
   Math.min(
     WEBSOCKET_GLOBAL_CAP,
-    Math.round(envNumber('WEBSOCKET_PER_IP_CAP', 5)),
+    Math.round(Math.min(envNumber('WEBSOCKET_PER_IP_CAP', 5), envNumber('MAX_WS_CONNECTIONS_PER_IP', Number.POSITIVE_INFINITY))),
   ),
 );
 const WEBSOCKET_MAX_PAYLOAD_BYTES = Math.max(
   1024,
-  Math.round(envNumber('WEBSOCKET_MAX_PAYLOAD_BYTES', 16384)),
+  Math.round(Math.min(envNumber('WEBSOCKET_MAX_PAYLOAD_BYTES', 16384), envNumber('MAX_WS_MESSAGE_BYTES', Number.POSITIVE_INFINITY))),
 );
 const WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES = Math.max(
   WEBSOCKET_MAX_PAYLOAD_BYTES,
-  Math.round(envNumber('WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES', 1048576)),
+  Math.round(Math.min(envNumber('WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES', 1048576), envNumber('MAX_WS_BUFFERED_BYTES', Number.POSITIVE_INFINITY))),
 );
 const WEBSOCKET_HEARTBEAT_INTERVAL_MS = Math.max(
   5,
-  Math.round(envNumber('WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS', 30)),
+  Math.round(envNumber('WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS', envNumber('WS_HEARTBEAT_INTERVAL_MS', 30000) / 1000)),
 ) * 1000;
 const WEBSOCKET_IDLE_TIMEOUT_MS = Math.max(
   WEBSOCKET_HEARTBEAT_INTERVAL_MS * 2,
@@ -519,26 +537,6 @@ const MAX_OBSERVER_ENTRIES = Math.max(
   1,
   Math.round(envNumber('MAX_OBSERVER_ENTRIES', 10000)),
 );
-const MAX_RATE_LIMIT_BUCKETS = Math.max(
-  1,
-  Math.round(envNumber('MAX_RATE_LIMIT_BUCKETS', 10000)),
-);
-const MAX_WS_CONNECTIONS = Math.max(
-  1,
-  Math.round(envNumber('MAX_WS_CONNECTIONS', 512)),
-);
-const MAX_WS_CONNECTIONS_PER_IP = Math.max(
-  1,
-  Math.round(envNumber('MAX_WS_CONNECTIONS_PER_IP', 128)),
-);
-const MAX_WS_MESSAGE_BYTES = Math.max(
-  1,
-  Math.round(envNumber('MAX_WS_MESSAGE_BYTES', 1048576)),
-);
-const MAX_WS_BUFFERED_BYTES = Math.max(
-  65536,
-  Math.round(envNumber('MAX_WS_BUFFERED_BYTES', 1048576)),
-);
 const WS_CONNECTION_RATE_WINDOW_MS = Math.max(
   1,
   envNumber('WS_CONNECTION_RATE_WINDOW_SECONDS', 60),
@@ -546,25 +544,6 @@ const WS_CONNECTION_RATE_WINDOW_MS = Math.max(
 const WS_CONNECTION_RATE_MAX = Math.max(
   1,
   Math.round(envNumber('WS_CONNECTION_RATE_MAX', 6000)),
-);
-const WS_MESSAGE_RATE_WINDOW_MS = Math.max(
-  1,
-  envNumber('WS_MESSAGE_RATE_WINDOW_SECONDS', 60),
-) * 1000;
-const WS_MESSAGE_RATE_MAX = Math.max(
-  1,
-  Math.round(envNumber('WS_MESSAGE_RATE_MAX', 12000)),
-);
-const WS_ORIGIN_CHECK_ENABLED = envBool('WS_ORIGIN_CHECK_ENABLED', true);
-const WS_ALLOW_MISSING_ORIGIN = envBool('WS_ALLOW_MISSING_ORIGIN', true);
-const WS_ALLOWED_ORIGINS = dedupe(
-  envList('WS_ALLOWED_ORIGINS')
-    .map(normalizeWebSocketOrigin)
-    .filter(Boolean),
-);
-const WS_HEARTBEAT_INTERVAL_MS = Math.max(
-  10000,
-  Math.round(envNumber('WS_HEARTBEAT_INTERVAL_MS', 30000)),
 );
 const SESSION_TTL_MS = Math.max(60, envNumber('SESSION_TTL_SECONDS', 600)) * 1000;
 const RESULT_RETENTION_MS = Math.max(
@@ -782,6 +761,48 @@ function loadRegionBoundaries() {
 }
 
 const regionBoundaries = loadRegionBoundaries();
+const allowedRegionGroups = envList('ALLOWED_REGION_GROUPS');
+const allowedRegions = envList('ALLOWED_REGIONS');
+const geographicScopeEnabled = allowedRegionGroups.length > 0 || allowedRegions.length > 0;
+const initialRegion = String(process.env.INITIAL_REGION || '').trim();
+const defaultRegions = initialRegion ? [initialRegion] : [];
+const geographicDefaultsEnabled = defaultRegions.length > 0;
+if (geographicScopeEnabled || geographicDefaultsEnabled) {
+  if (regionBoundaries.length === 0) {
+    throw new Error('Geographic scope requires a readable REGIONS_FILE with region boundaries');
+  }
+  for (const [setting, labels, property] of [
+    ['ALLOWED_REGION_GROUPS', allowedRegionGroups, 'group'],
+    ['ALLOWED_REGIONS', allowedRegions, 'name'],
+    ['INITIAL_REGION', defaultRegions, 'name'],
+  ]) {
+    const known = new Set(regionBoundaries.map((boundary) => boundary[property]));
+    const unknown = labels.filter((label) => !known.has(label));
+    if (unknown.length) throw new Error(`Geographic scope: unknown ${setting} labels: ${unknown.join(', ')}`);
+  }
+}
+
+if (geographicScopeEnabled) {
+  const outside = defaultRegions.filter((region) => regionBoundaries
+    .filter((boundary) => boundary.name === region)
+    .some((boundary) => !allowedRegions.includes(region) && !allowedRegionGroups.includes(boundary.group)));
+  if (outside.length) throw new Error(`Geographic scope: INITIAL_REGION outside allowed scope: ${outside.join(', ')}`);
+}
+
+function observerKeyInDefaultScope(key) {
+  if (!observerKeyInGeographicScope(key)) return false;
+  if (!geographicDefaultsEnabled) return true;
+  const observer = observerState.get(key) || observerProfiles.get(key);
+  return defaultRegions.includes(deriveRegionInfo(observer?.lat, observer?.lon).region);
+}
+
+// Scope is a website selection boundary, never an MQTT ingestion filter.
+function observerKeyInGeographicScope(key) {
+  if (!geographicScopeEnabled) return true;
+  const observer = observerState.get(key) || observerProfiles.get(key);
+  const info = deriveRegionInfo(observer?.lat, observer?.lon);
+  return Boolean(info.region && (allowedRegions.includes(info.region) || allowedRegionGroups.includes(info.regionGroup)));
+}
 
 function deriveRegionInfo(lat, lon) {
   if (lat == null || lon == null || regionBoundaries.length === 0) {
@@ -832,7 +853,6 @@ const messageToSession = new Map();
 const rateLimitBuckets = new Map();
 const turnstileAuthTokens = new Map();
 const webSocketAuthTokens = new Map();
-const webSocketConnectionsByIp = new Map();
 let observerNamesWriteTimer = null;
 let observerActivityWriteTimer = null;
 let resultsWriteTimer = null;
@@ -1010,6 +1030,7 @@ function serializeSessionRecord(session) {
       count: Math.max(1, Number(receipt.count || 1)),
       topic: String(receipt.topic || ''),
       messageHash: normalizeMessageHash(receipt.messageHash),
+      meshcoreScopes: recordedMeshcoreScopes(receipt.meshcoreScopes),
       packetType: receipt.packetType,
       channelName: String(receipt.channelName || ''),
       rssi: Number.isFinite(Number(receipt.rssi)) ? Number(receipt.rssi) : null,
@@ -1052,6 +1073,7 @@ function restoreSessionRecord(rawSession) {
       count: Math.max(1, Number(rawReceipt?.count || 1)),
       topic: String(rawReceipt?.topic || ''),
       messageHash: normalizeMessageHash(rawReceipt?.messageHash || rawSession.messageHash || ''),
+      meshcoreScopes: recordedMeshcoreScopes(rawReceipt?.meshcoreScopes),
       packetType: rawReceipt?.packetType ?? null,
       channelName: String(rawReceipt?.channelName || rawSession.channelName || ''),
       rssi: Number.isFinite(Number(rawReceipt?.rssi)) ? Number(rawReceipt.rssi) : null,
@@ -1609,23 +1631,29 @@ function pruneRateLimitBuckets(now = Date.now(), maximumSize = RATE_LIMIT_BUCKET
   }
 }
 
+function consumeRateLimitBucket(key, maxRequests, windowMs, now = Date.now()) {
+  const existing = rateLimitBuckets.get(key);
+  if (!existing || existing.resetAt <= now) {
+    if (!existing && rateLimitBuckets.size >= RATE_LIMIT_BUCKET_MAX) {
+      pruneRateLimitBuckets(now, RATE_LIMIT_BUCKET_MAX - 1);
+    }
+    rateLimitBuckets.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfter: 0 };
+  }
+  existing.count += 1;
+  return {
+    allowed: existing.count <= maxRequests,
+    retryAfter: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+  };
+}
+
 function rateLimit(namespace, maxRequests, windowMs) {
   return (request, response, next) => {
-    const key = `${namespace}:${clientAddress(request)}`;
-    const now = Date.now();
-    const existing = rateLimitBuckets.get(key);
-    if (!existing || existing.resetAt <= now) {
-      if (!existing && rateLimitBuckets.size >= RATE_LIMIT_BUCKET_MAX) {
-        pruneRateLimitBuckets(now, RATE_LIMIT_BUCKET_MAX - 1);
-      }
-      rateLimitBuckets.set(key, {
-        count: 1,
-        resetAt: now + windowMs,
-      });
+    const result = consumeRateLimitBucket(`${namespace}:${clientAddress(request)}`, maxRequests, windowMs);
+    if (result.allowed) {
       next();
       return;
     }
-
     response.setHeader('Retry-After', String(result.retryAfter));
     response.status(429).json({ error: 'rate_limited', retryAfter: result.retryAfter });
   };
@@ -1967,25 +1995,25 @@ function decodeMeshPacket(rawHex) {
   }
 }
 
-function createCode() {
+function createCode(length) {
   const existingCodes = new Set(
     [...sessions.values()]
       .filter((session) => isRetainedSession(session))
       .map((session) => session.code),
   );
   for (let attempt = 0; attempt < 32; attempt += 1) {
-    const candidate = `MHC-${randomBytes(3).toString('hex').toUpperCase()}`;
+    const candidate = `${CODE_PREFIX}-${randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length).toUpperCase()}`;
     if (!existingCodes.has(candidate)) {
       return candidate;
     }
   }
-  return `MHC-${randomUUID().replace(/-/g, '').slice(0, 6).toUpperCase()}`;
+  return null;
 }
 
 function activeObserverKeys(now = Date.now()) {
   const keys = [];
   for (const observer of observerState.values()) {
-    if (now - observer.lastPacketAt <= OBSERVER_ACTIVE_WINDOW_MS) {
+    if (now - observer.lastPacketAt <= OBSERVER_ACTIVE_WINDOW_MS && observerKeyInGeographicScope(observer.key)) {
       keys.push(observer.key);
     }
   }
@@ -1998,11 +2026,12 @@ function observerDisplayLabelForKey(observerKey) {
   return String(observer?.name || profile?.name || shortKey(observerKey));
 }
 
-function topObserverKeys(now = Date.now()) {
+function topObserverKeys(now = Date.now(), matches = observerKeyInDefaultScope) {
   const dayKeys = new Set(recentUtcDayKeys(OBSERVER_TOP_WINDOW_DAYS, now));
   const ranked = [];
 
   for (const [key, entry] of observerActivityHistory.entries()) {
+    if (!matches(key)) continue;
     const lastPacketAt = Math.max(0, Number(entry?.lastPacketAt || 0));
     if (OBSERVER_RETENTION_MS > 0 && (!lastPacketAt || now - lastPacketAt > OBSERVER_RETENTION_MS)) {
       continue;
@@ -2040,9 +2069,9 @@ function topObserverKeys(now = Date.now()) {
 }
 
 function defaultObserverTarget(now = Date.now()) {
-  if (KNOWN_OBSERVERS.length > 0) {
+  if (!geographicDefaultsEnabled && KNOWN_OBSERVERS.length > 0) {
     return {
-      keys: [...KNOWN_OBSERVERS],
+      keys: KNOWN_OBSERVERS.filter(observerKeyInDefaultScope),
       source: 'configured',
     };
   }
@@ -2054,7 +2083,7 @@ function defaultObserverTarget(now = Date.now()) {
     };
   }
   return {
-    keys: activeObserverKeys(now),
+    keys: activeObserverKeys(now).filter(observerKeyInDefaultScope),
     source: 'active-window',
   };
 }
@@ -2130,7 +2159,7 @@ function observerDirectory() {
   const now = Date.now();
   const defaultKeys = new Set(defaultObserverTarget().keys);
   return [...observerState.values()]
-    .filter((observer) => observerIsRetained(observer, now))
+    .filter((observer) => observerIsRetained(observer, now) && observerKeyInGeographicScope(observer.key))
     .sort((left, right) => {
       const leftDefault = defaultKeys.has(left.key) ? 1 : 0;
       const rightDefault = defaultKeys.has(right.key) ? 1 : 0;
@@ -2396,6 +2425,7 @@ function serializeSession(session, request = null) {
         count: report.count,
         topic: report.topic,
         messageHash: report.messageHash,
+        meshcoreScopes: recordedMeshcoreScopes(report.meshcoreScopes),
         packetType: report.packetType,
         channelName: report.channelName,
         rssi: report.rssi,
@@ -2518,6 +2548,7 @@ function snapshotPayload() {
 
   return {
     serverTime: Date.now(),
+    meshcoreScopes: { enabled: meshcoreScopes.enabled, count: meshcoreScopes.regions.length },
     site: {
       title: APP_TITLE,
       version: APP_VERSION,
@@ -2535,6 +2566,10 @@ function snapshotPayload() {
       broker: dashboardBrokerHost,
       topics: MQTT_TOPICS,
     },
+    map: {
+      cartoBasemapKey: CARTO_BASEMAP_KEY,
+      darkBasemapAvailable: true,
+    },
     turnstile: {
       enabled: TURNSTILE_ENABLED,
       siteKey: TURNSTILE_ENABLED ? TURNSTILE_SITE_KEY : '',
@@ -2548,10 +2583,34 @@ function snapshotPayload() {
       topCount: OBSERVER_TOP_COUNT,
       hashDisplayBytes: OBSERVER_HASH_DISPLAY_BYTES,
       distanceUnit: DISTANCE_UNIT,
+      nearbyDefaultRadius: NEARBY_DEFAULT_RADIUS,
+      browserLocationEnabled: BROWSER_LOCATION_ENABLED,
+    },
+    codeOptions: {
+      prefix: CODE_PREFIX,
+      minLength: 6,
+      maxLength: ALLOW_LONGER_TEST_CODES ? 16 : 6,
+      defaultLength: 6,
     },
     results: {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
     },
+    defaultRegions,
+    topObserverKeys: (() => {
+      const keys = new Set(directory.map((o) => o.key));
+      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
+      return ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT);
+    })(),
+    topObserverKeysByGroup: Object.fromEntries([...new Set(directory.map((o) => o.regionGroup).filter(Boolean))].map((group) => {
+      const keys = new Set(directory.filter((o) => o.regionGroup === group).map((o) => o.key));
+      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
+      return [group, ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT)];
+    })),
+    topObserverKeysByRegion: Object.fromEntries([...new Set(directory.map((o) => o.region).filter(Boolean))].map((region) => {
+      const keys = new Set(directory.filter((o) => o.region === region).map((o) => o.key));
+      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
+      return [region, ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT)];
+    })),
     defaultObserverKeys: defaultTarget.keys,
     defaultObservers,
     defaultObserverSource: defaultTarget.source,
@@ -2560,6 +2619,7 @@ function snapshotPayload() {
     regionHierarchy,
     availableRegions: [...new Set(directory.map((o) => o.region).filter(Boolean))].sort(),
     availableRegionGroups: regionHierarchy.map((entry) => entry.group).filter(Boolean),
+    websocket: { path: WEBSOCKET_PATH },
     testChannel: {
       name: testChannelName,
       hash: testChannelHash || null,
@@ -2813,6 +2873,11 @@ function recordReceipt(session, packetInfo) {
   const observer = observerState.get(packetInfo.observerKey);
   const label = observer?.name || shortKey(packetInfo.observerKey);
   if (existing) {
+    const scopes = recordedMeshcoreScopes(existing.meshcoreScopes);
+    if (!scopes.some(scope => JSON.stringify(scope) === JSON.stringify(packetInfo.meshcoreScope))) {
+      scopes.push(packetInfo.meshcoreScope);
+    }
+    existing.meshcoreScopes = scopes;
     existing.lastSeenAt = packetInfo.seenAt;
     existing.count += 1;
     existing.path = [...packetInfo.path];
@@ -2834,6 +2899,7 @@ function recordReceipt(session, packetInfo) {
     count: 1,
     topic: packetInfo.topic,
     messageHash: packetInfo.messageHash,
+    meshcoreScopes: [packetInfo.meshcoreScope],
     packetType: packetInfo.packetType,
     channelName: packetInfo.channelName,
     rssi: packetInfo.rssi,
@@ -2943,7 +3009,6 @@ function pruneState() {
 
   cleanupExpiredTurnstileTokens();
   pruneWebSocketAuthTokens(now);
-  pruneRateLimitBuckets(now);
 
   for (const session of sessions.values()) {
     if (session.status !== 'expired' && now >= session.expiresAt) {
@@ -3125,7 +3190,10 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
       );
     }
   }
-  if (!session || session.status === 'expired') {
+  if (!session && messageHash && messageToSession.has(messageHash)) {
+    session = sessions.get(messageToSession.get(messageHash)) || null;
+  }
+  if (!session || session.status === 'expired' || packetInfo.seenAt >= session.expiresAt) {
     return;
   }
 
@@ -3139,6 +3207,11 @@ function handlePacketMessage(topic, observerKey, payloadBuffer) {
     session.sender = sender;
   }
 
+  // Scope HMAC comparisons are receipt work, not general channel-traffic work.
+  // Keep the original wire payload and each observer's forwarded transport codes.
+  packetInfo.meshcoreScope = decodedGroup
+    ? recognizeMeshcoreScope(meshcoreScopes, parsePacketHex(raw))
+    : { state: 'unavailable', names: [] };
   if (recordReceipt(session, packetInfo)) {
     logger.debug(
       `[session] receipt ${session.code} from ${shortKey(packetInfo.observerKey)} (${messageHash || 'no-hash'})`,
@@ -3155,8 +3228,8 @@ app.use(express.json());
 app.use((request, response, next) => {
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.setHeader('X-Frame-Options', 'DENY');
-  response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  response.setHeader('Permissions-Policy', 'camera=(), geolocation=(), microphone=()');
+  response.setHeader('Referrer-Policy', 'no-referrer');
+  response.setHeader('Permissions-Policy', `camera=(), geolocation=(${BROWSER_LOCATION_ENABLED ? 'self' : ''}), microphone=()`);
   if (request.path.startsWith('/api/') || request.path.startsWith('/share/')) {
     response.setHeader('Cache-Control', 'no-store');
   }
@@ -3165,14 +3238,15 @@ app.use((request, response, next) => {
     [
       "default-src 'self'",
       "base-uri 'self'",
-      "connect-src 'self' ws: wss:",
+      "connect-src 'self' ws: wss: https://tiles.openfreemap.org",
       "form-action 'self'",
       "frame-ancestors 'none'",
       "frame-src https://challenges.cloudflare.com",
-      "img-src 'self' data:",
+      "img-src 'self' data: blob: https://tiles.openfreemap.org https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com",
       "object-src 'none'",
       "script-src 'self' https://challenges.cloudflare.com",
       "style-src 'self' 'unsafe-inline'",
+      "worker-src 'self'",
     ].join('; '),
   );
   if (request.secure) {
@@ -3183,6 +3257,10 @@ app.use((request, response, next) => {
   }
   next();
 });
+app.get('/privacy', (request, response) => {
+  response.sendFile(path.join(APP_DIR, 'public/privacy.html'));
+});
+
 app.get('/manifest.webmanifest', (request, response) => {
   response.type('application/manifest+json').send(JSON.stringify({
     name: PWA_APP_NAME,
@@ -3218,6 +3296,8 @@ app.use('/tiles', (request, response, next) => {
   userAgent: `MeshHealthCheck/${APP_VERSION} (+${SITE_URL || REPO_URL})`,
 }));
 app.use('/vendor/leaflet', express.static(path.join(APP_DIR, 'node_modules/leaflet/dist'), { index: false }));
+app.use('/vendor/maplibre', express.static(path.join(APP_DIR, 'node_modules/maplibre-gl/dist'), { index: false }));
+app.use('/vendor/maplibre-leaflet', express.static(path.join(APP_DIR, 'node_modules/@maplibre/maplibre-gl-leaflet'), { index: false }));
 app.use(express.static(path.join(APP_DIR, 'public'), { index: false }));
 
 app.get('/api/bootstrap', (request, response) => {
@@ -3268,12 +3348,33 @@ app.post(
       return;
     }
     const now = Date.now();
-    const requestedAllowlist = explicitObserverAllowlist(request.body?.expectedObserverKeys);
+    const requestedKeys = request.body?.expectedObserverKeys;
+    const codeLength = request.body?.codeLength === undefined ? 6 : request.body.codeLength;
+    if (!Number.isInteger(codeLength) || codeLength < 6 || codeLength > 16
+      || (!ALLOW_LONGER_TEST_CODES && codeLength !== 6)) {
+      response.status(400).json({ error: 'invalid_code_length' });
+      return;
+    }
+    if (geographicScopeEnabled && Array.isArray(requestedKeys)
+      && requestedKeys.some((key) => !observerKeyInGeographicScope(normalizeKey(key)))) {
+      response.status(400).json({ error: 'observer_outside_geographic_scope' });
+      return;
+    }
+    const requestedAllowlist = explicitObserverAllowlist(requestedKeys);
     const defaultExpected = expectedObserversForSession();
     const expected = requestedAllowlist.enabled ? requestedAllowlist : defaultExpected;
+    if ((geographicScopeEnabled || geographicDefaultsEnabled) && expected.keys.length === 0) {
+      response.status(400).json({ error: 'no_observers_in_geographic_scope' });
+      return;
+    }
+    const code = createCode(codeLength);
+    if (!code) {
+      response.status(503).json({ error: 'code_generation_exhausted' });
+      return;
+    }
     const session = {
       id: randomUUID(),
-      code: createCode(),
+      code,
       createdAt: now,
       expiresAt: now + SESSION_TTL_MS,
       status: 'waiting',
@@ -3286,7 +3387,7 @@ app.post(
       sender: '',
       channelHash: '',
       channelName: '',
-      allowlistEnabled: requestedAllowlist.enabled,
+      allowlistEnabled: requestedAllowlist.enabled || geographicScopeEnabled,
       expectedObserverKeys: expected.keys.length > 0 ? expected.keys : [],
       expectedObserverSource: expected.source || '',
       receipts: new Map(),
@@ -3386,238 +3487,38 @@ app.get(/.*/, (request, response) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({
-  noServer: true,
-  maxPayload: WEBSOCKET_MAX_PAYLOAD_BYTES,
-  perMessageDeflate: false,
+const websocketHub = createWebSocketHub({
+  server,
+  path: WEBSOCKET_PATH,
+  allowedOrigins: WEBSOCKET_ALLOWED_ORIGINS,
+  trustProxy: TRUST_PROXY,
+  hasAccess: hasWebSocketAccess,
+  clientAddress,
+  admit: address => consumeRateLimitBucket(`ws-connect:${address}`, WS_CONNECTION_RATE_MAX, WS_CONNECTION_RATE_WINDOW_MS).allowed,
+  snapshot: snapshotPayload,
+  limits: {
+    global: WEBSOCKET_GLOBAL_CAP,
+    perAddress: WEBSOCKET_PER_IP_CAP,
+    payloadBytes: WEBSOCKET_MAX_PAYLOAD_BYTES,
+    bufferedBytes: WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES,
+    heartbeatMs: WEBSOCKET_HEARTBEAT_INTERVAL_MS,
+    idleMs: WEBSOCKET_IDLE_TIMEOUT_MS,
+  },
 });
-
 let mqttClient = null;
 let mqttConnected = false;
 let lastSnapshotSentAt = 0;
 let pruneInterval = null;
-let webSocketHeartbeatInterval = null;
-
-function rejectWebSocketUpgrade(socket, statusCode, reason) {
-  const statusText = http.STATUS_CODES[statusCode] || 'Rejected';
-  const body = `${reason}\n`;
-  socket.end(
-    `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
-    'Connection: close\r\n' +
-    'Content-Type: text/plain; charset=utf-8\r\n' +
-    `Content-Length: ${Buffer.byteLength(body)}\r\n` +
-    '\r\n' +
-    body,
-  );
-}
-
-function isAllowedWebSocketPath(request) {
-  try {
-    const parsed = new URL(request.url || '/', 'http://localhost');
-    return parsed.pathname === WEBSOCKET_PATH && !parsed.search;
-  } catch {
-    return false;
-  }
-}
-
-function isAllowedWebSocketOrigin(request) {
-  const rawOrigin = String(request.headers?.origin || '').trim();
-  const origin = normalizeHttpOrigin(rawOrigin);
-  if (!origin) {
-    return false;
-  }
-  if (WEBSOCKET_ALLOWED_ORIGINS.length > 0) {
-    return WEBSOCKET_ALLOWED_ORIGINS.includes(origin);
-  }
-
-  let parsedOrigin;
-  try {
-    parsedOrigin = new URL(rawOrigin);
-  } catch {
-    return false;
-  }
-  if (parsedOrigin.username || parsedOrigin.password) {
-    return false;
-  }
-  const host = String(request.headers?.host || '').trim().toLowerCase();
-  if (!host || parsedOrigin.host.toLowerCase() !== host) {
-    return false;
-  }
-
-  let expectedProtocol = request.socket?.encrypted ? 'https:' : 'http:';
-  if (TRUST_PROXY) {
-    const forwardedProtocol = String(request.headers?.['x-forwarded-proto'] || '')
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    if (forwardedProtocol === 'http' || forwardedProtocol === 'https') {
-      expectedProtocol = `${forwardedProtocol}:`;
-    }
-  }
-  return parsedOrigin.protocol === expectedProtocol;
-}
-
-function sendWebSocketPayload(socket, payload) {
-  if (socket.readyState !== WebSocket.OPEN) {
-    return false;
-  }
-  const pendingBytes = socket.bufferedAmount + Buffer.byteLength(payload);
-  if (pendingBytes > WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES) {
-    socket.terminate();
-    return false;
-  }
-  try {
-    socket.send(payload, (error) => {
-      if (error) {
-        socket.terminate();
-      }
-    });
-  } catch {
-    socket.terminate();
-    return false;
-  }
-  return true;
-}
-
-function stopWebSocketHeartbeatIfIdle() {
-  if (wss.clients.size > 0 || !webSocketHeartbeatInterval) {
-    return;
-  }
-  clearInterval(webSocketHeartbeatInterval);
-  webSocketHeartbeatInterval = null;
-}
-
-function ensureWebSocketHeartbeat() {
-  if (webSocketHeartbeatInterval) {
-    return;
-  }
-  webSocketHeartbeatInterval = setInterval(() => {
-    const now = Date.now();
-    for (const client of wss.clients) {
-      if (client.readyState !== WebSocket.OPEN) {
-        continue;
-      }
-      if (now - client.lastPongAt >= WEBSOCKET_IDLE_TIMEOUT_MS) {
-        client.terminate();
-        continue;
-      }
-      try {
-        client.ping();
-      } catch {
-        client.terminate();
-      }
-    }
-  }, WEBSOCKET_HEARTBEAT_INTERVAL_MS);
-  webSocketHeartbeatInterval.unref?.();
-}
 
 function broadcastSnapshot(force = false) {
   const now = Date.now();
-  if (!force && now - lastSnapshotSentAt < 1000) {
-    return;
-  }
+  if (!force && now - lastSnapshotSentAt < 1000) return;
   lastSnapshotSentAt = now;
-  const payload = JSON.stringify({
-    type: 'snapshot',
-    data: snapshotPayload(),
-  });
-  for (const client of wss.clients) {
-    sendWebSocketPayload(client, payload);
-  }
+  websocketHub.broadcast({ type: 'snapshot', data: snapshotPayload() });
 }
 
-wss.on('connection', (socket, request) => {
-  const address = clientAddress(request);
-  webSocketConnectionsByIp.set(
-    address,
-    (webSocketConnectionsByIp.get(address) || 0) + 1,
-  );
-  socket.clientAddress = address;
-  socket.lastPongAt = Date.now();
-  socket.on('pong', () => {
-    socket.lastPongAt = Date.now();
-  });
-  socket.on('message', () => {
-    socket.close(1008, 'read-only');
-  });
-  socket.on('error', () => {
-    // The close handler owns connection accounting and cleanup.
-  });
-  socket.on('close', () => {
-    const current = webSocketConnectionsByIp.get(address) || 0;
-    if (current <= 1) {
-      webSocketConnectionsByIp.delete(address);
-    } else {
-      webSocketConnectionsByIp.set(address, current - 1);
-    }
-    stopWebSocketHeartbeatIfIdle();
-  });
-  ensureWebSocketHeartbeat();
-  sendWebSocketPayload(socket, JSON.stringify({
-    type: 'snapshot',
-    data: snapshotPayload(),
-  }));
-});
-
-server.on('upgrade', (request, socket, head) => {
-  if (!isAllowedWebSocketPath(request)) {
-    rejectWebSocketUpgrade(socket, 404, 'websocket_path_not_found');
-    return;
-  }
-  if (!isAllowedWebSocketOrigin(request)) {
-    rejectWebSocketUpgrade(socket, 403, 'websocket_origin_forbidden');
-    return;
-  }
-  if (!hasWebSocketAccess(request)) {
-    rejectWebSocketUpgrade(socket, 401, 'websocket_auth_required');
-    return;
-  }
-
-  const address = clientAddress(request);
-  if (wss.clients.size >= WEBSOCKET_GLOBAL_CAP) {
-    rejectWebSocketUpgrade(socket, 503, 'websocket_capacity_reached');
-    return;
-  }
-  if ((webSocketConnectionsByIp.get(address) || 0) >= WEBSOCKET_PER_IP_CAP) {
-    rejectWebSocketUpgrade(socket, 429, 'websocket_ip_capacity_reached');
-    return;
-  }
-
-  try {
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit('connection', ws, request);
-    });
-  } catch {
-    socket.destroy();
-  }
-});
-
-server.on('close', () => {
-  if (webSocketHeartbeatInterval) {
-    clearInterval(webSocketHeartbeatInterval);
-    webSocketHeartbeatInterval = null;
-  }
-});
-
-function startWebSocketHeartbeat() {
-  if (wsHeartbeatTimer) {
-    return;
-  }
-  wsHeartbeatTimer = setInterval(() => {
-    for (const client of wss.clients) {
-      if (client.isAlive === false) {
-        client.terminate();
-        continue;
-      }
-      client.isAlive = false;
-      try {
-        client.ping();
-      } catch {
-        client.terminate();
-      }
-    }
-  }, WS_HEARTBEAT_INTERVAL_MS);
-  wsHeartbeatTimer.unref?.();
+function broadcastSessionUpdate(sessionId) {
+  websocketHub.broadcast({ type: 'session-update', data: { sessionId: String(sessionId || '') } });
 }
 
 function startMqtt() {
@@ -3686,7 +3587,6 @@ function startRuntime() {
       broadcastSnapshot(false);
     }
   }, 10000);
-  startWebSocketHeartbeat();
   startMqtt();
 
   server.listen(PORT, () => {
@@ -3715,13 +3615,7 @@ async function shutdownRuntime(signal) {
     clearInterval(pruneInterval);
     pruneInterval = null;
   }
-  if (wsHeartbeatTimer) {
-    clearInterval(wsHeartbeatTimer);
-    wsHeartbeatTimer = null;
-  }
-  for (const client of wss.clients) {
-    client.terminate();
-  }
+  websocketHub.disconnectAll();
   if (mqttClient) {
     const client = mqttClient;
     mqttClient = null;
@@ -3744,15 +3638,12 @@ async function shutdownRuntime(signal) {
 
 export function resetTestState() {
   flushScheduledWrites();
-  for (const client of wss.clients) {
-    client.terminate();
-  }
+  websocketHub.disconnectAll();
   sessions.clear();
   messageToSession.clear();
   rateLimitBuckets.clear();
   turnstileAuthTokens.clear();
   webSocketAuthTokens.clear();
-  webSocketConnectionsByIp.clear();
   observerState.clear();
   observerActivityHistory.clear();
   for (const [key, entry] of baselineObserverActivityHistory.entries()) {

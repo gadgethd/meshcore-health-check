@@ -41,6 +41,7 @@ const verifierUrl = `http://127.0.0.1:${verifier.address().port}/verify`;
 
 process.env.MESH_HEALTH_DISABLE_RUNTIME = 'true';
 process.env.TURNSTILE_ENABLED = 'true';
+process.env.TURNSTILE_BOT_BYPASS = 'true';
 process.env.TURNSTILE_SITE_KEY = 'site-key';
 process.env.TURNSTILE_SECRET_KEY = 'secret-key';
 process.env.TURNSTILE_API_URL = verifierUrl;
@@ -145,4 +146,16 @@ test('explicitly enabled Turnstile configuration fails without both keys', async
   });
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /TURNSTILE_ENABLED=true requires both/);
+});
+
+test('preview bot bypass does not authorize session creation or issue a WebSocket token', async () => {
+  const headers = { 'user-agent': 'Twitterbot/1.0' };
+  const preview = await fetch(`${baseUrl}/app`, { headers, redirect: 'manual' });
+  assert.equal(preview.status, 200);
+  assert.equal(preview.headers.getSetCookie().some(cookie => cookie.startsWith('mesh_health_turnstile_ws=')), false);
+  const create = await fetch(`${baseUrl}/api/sessions`, { method: 'POST', headers });
+  assert.equal(create.status, 403);
+  assert.deepEqual(await create.json(), { error: 'turnstile_required' });
+  const bootstrap = await (await fetch(`${baseUrl}/api/bootstrap`, { headers })).json();
+  assert.equal(bootstrap.turnstile.verified, false);
 });

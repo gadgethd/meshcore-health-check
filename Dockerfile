@@ -1,5 +1,4 @@
-# node:22-slim
-FROM node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1
 
 WORKDIR /app
 
@@ -12,7 +11,9 @@ COPY server.js ./
 COPY lib ./lib
 COPY public ./public
 COPY regions ./regions
-COPY README.md HOWTO.md ENVIRONMENT.md AGENTS.md CHANGES.md ./
+COPY region-scopes.example.yml ./
+COPY README.md HOWTO.md ENVIRONMENT.md AGENTS.md CHANGES.md LICENSE ./
+COPY LICENSES ./LICENSES
 
 ENV NODE_ENV=production
 EXPOSE 3090

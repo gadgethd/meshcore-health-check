@@ -1,21 +1,35 @@
-const CACHE_NAME = 'mesh-health-check-pwa-v4';
+// Asset revision is independent of the release version; bump for shell changes.
+const CACHE_NAME = 'mesh-health-check-pwa-v1.4.3-guided-1';
 const CORE_ASSETS = [
   '/',
   '/app',
+  '/privacy',
   '/manifest.webmanifest',
+  '/styles.css',
+  '/styles.css?v=1.4.3',
+  '/app.js',
+  '/app.js?v=1.4.3',
+  '/check-guidance.js',
   '/design-tokens.css',
-  '/styles.css?v=1.3.8',
-  '/app.js?v=1.3.8',
+  '/nearest-observers.js',
+  '/location-refinement.js',
   '/landing.css',
   '/turnstile-landing.js',
   '/logo.png',
   '/vendor/leaflet/leaflet.css',
   '/vendor/leaflet/leaflet.js',
+  '/vendor/maplibre/maplibre-gl.css',
+  '/map-renderer.js',
+  '/vendor/maplibre/maplibre-gl.mjs',
+  // MapLibre's self-contained worker uses an exact versioned URL since 6.13.
+  '/vendor/maplibre/maplibre-gl-worker.mjs?v=6.16.0',
+  '/vendor/maplibre-leaflet/leaflet-maplibre-gl.js',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(CORE_ASSETS)),
+    caches.open(CACHE_NAME).then((cache) =>
+      cache.addAll(CORE_ASSETS.map((url) => new Request(url, { cache: 'reload' })))),
   );
   self.skipWaiting();
 });
@@ -28,19 +42,60 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-async function networkFirst(request) {
+async function cachedResponse(request) {
   try {
-    const response = await fetch(new Request(request, { cache: 'no-store' }));
-    const cache = await caches.open(CACHE_NAME);
-    cache.put(request, response.clone());
-    return response;
+    return await caches.match(request);
   } catch {
-    const cached = await caches.match(request);
+    return undefined;
+  }
+}
+
+async function storeResponse(request, response) {
+  const asset = /\.(?:m?js|css)$/.test(new URL(request.url).pathname);
+  if (!response.ok || response.redirected
+    || (asset && /(?:text\/html|application\/xhtml\+xml)/i.test(response.headers.get('Content-Type') || ''))) {
+    return;
+  }
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(request, response.clone());
+  } catch {
+    // Cache storage is best effort; never discard a successful network response.
+  }
+}
+
+async function cacheFirst(request) {
+  const cached = await cachedResponse(request);
+  if (cached) {
+    return cached;
+  }
+  const response = await fetch(request);
+  await storeResponse(request, response);
+  return response;
+}
+
+async function networkFirst(request) {
+  let response;
+  try {
+    response = await fetch(new Request(request, { cache: 'no-store' }));
+  } catch (error) {
+    const cached = await cachedResponse(request);
     if (cached) {
       return cached;
     }
-    return caches.match('/app');
+    // Only document navigations may fall back to the dashboard shell.
+    if (request.mode === 'navigate') {
+      const shell = await cachedResponse('/app');
+      if (shell) return shell;
+    }
+    throw error;
   }
+  if ([500, 502, 503, 504].includes(response.status)) {
+    const cached = await cachedResponse(request);
+    if (cached) return cached;
+  }
+  await storeResponse(request, response);
+  return response;
 }
 
 self.addEventListener('fetch', (event) => {
@@ -70,6 +125,7 @@ self.addEventListener('fetch', (event) => {
     || url.pathname.startsWith('/vendor/leaflet/')
     || url.pathname.endsWith('.css')
     || url.pathname.endsWith('.js')
+    || url.pathname.endsWith('.mjs')
     || url.pathname.endsWith('.png')
   ) {
     event.respondWith(networkFirst(event.request));

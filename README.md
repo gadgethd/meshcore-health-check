@@ -1,113 +1,196 @@
-# Mesh Health Check
+<h1 align="center">Mesh Health Check</h1>
 
-Mesh Health Check is a self-hosted web app for measuring MeshCore message
-coverage across MQTT-connected observers. It generates a short code, watches the
-configured MeshCore group channel for that code, then scores how many selected
-observers reported the matching message hash.
+<p align="center">
+  Check how far your MeshCore messages reach.<br />
+  Self-hosted observer coverage tests, receipt timelines, and shareable results.
+</p>
 
-The idea for this app came from Nick D from Boston.
+<p align="center">
+  <a href="https://github.com/yellowcooln/meshcore-health-check/releases"><img src="https://img.shields.io/github/v/release/yellowcooln/meshcore-health-check?style=flat&amp;color=0f766e" alt="Latest release" /></a>
+  <a href="https://github.com/yellowcooln/meshcore-health-check/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/yellowcooln/meshcore-health-check/ci.yml?branch=main&amp;style=flat&amp;label=CI" alt="CI on main" /></a>
+  <a href="https://github.com/yellowcooln/meshcore-health-check/actions/workflows/docker-publish.yml?query=branch%3Amain"><img src="https://img.shields.io/github/actions/workflow/status/yellowcooln/meshcore-health-check/docker-publish.yml?branch=main&amp;style=flat&amp;label=docker%20build" alt="Docker build on main" /></a>
+  <a href="https://hub.docker.com/r/yellowcooln/meshcore-health-check"><img src="https://img.shields.io/docker/pulls/yellowcooln/meshcore-health-check?style=flat&amp;logo=docker&amp;logoColor=white" alt="Docker pulls" /></a>
+</p>
 
-Other community Health Checks:
+<p align="center">
+  <a href="#quick-start">Quick start</a> &middot;
+  <a href="./HOWTO.md">Documentation</a> &middot;
+  <a href="./ENVIRONMENT.md">Configuration</a> &middot;
+  <a href="./CHANGES.md">Changelog</a> &middot;
+  <a href="https://github.com/yellowcooln/meshcore-health-check/issues">Report an issue</a>
+</p>
 
-- https://healthcheck.ukmesh.com/ - UK Mesh Health Check
+![Mesh Health Check main page showing a test code, observer selection, and coverage map](./main-example.png)
 
-![Coverage example 1](image1.png)
-![Coverage example 2](image2.png)
-![Coverage example 3](image3.png)
+<p align="center"><em>Generate a code, send it on your MeshCore channel, and see which observers received it.</em></p>
 
-## What It Does
+## Features
 
-- creates short-lived health-check codes
-- matches MeshCore `GroupText` packets from MQTT
-- scores observer coverage against a default or custom observer set
-- shows receipts, paths, RSSI, SNR, timing, repeaters, and map coverage
-- estimates packet-path distance between known observers, with mile or
-  kilometer labels
-- learns observer names and locations from MQTT metadata
-- tracks recent observer activity and can auto-select the top observers
-- supports region filters from GeoJSON boundary files
-- keeps retained `/share/:sessionId` result links
-- supports Cloudflare Turnstile and installable PWA behavior
+- Match MeshCore GroupText messages from MQTT and score coverage against selected observers.
+- Inspect receipt timing, paths, RSSI, SNR, repeaters, and estimated packet-path distances.
+- View observer coverage on a map with light/dark themes and no required map API key.
+- Choose activity-ranked defaults, fixed observers, geographic regions, or nearby observers.
+- Keep session history and share retained results through a link.
+- Optionally recognize public MeshCore routing scopes and offer longer test codes.
+- Support Cloudflare Turnstile and installation as a PWA.
 
-## Quick Start
+## How it works
 
-Clone the repo and run the local Compose build:
+1. Copy the generated code from the dashboard.
+2. Send it yourself on the displayed MeshCore channel using your radio/client.
+3. Watch MQTT-connected observers report the matching message and compare the results.
+
+**The app does not transmit for you.** Its score measures receipts from the selected observer set, not guaranteed coverage everywhere. Before a matching message arrives, the check shows **Awaiting message** rather than a score.
+
+The score retains the targets saved with a used code. Changing observers updates the map and the targets for the next code, without rewriting the old result. See the [user flow](./HOWTO.md#user-flow) and [result explanation](./HOWTO.md#result-meaning).
+
+## Quick start
+
+### Run the prebuilt Docker image
+
+Images are available on [Docker Hub](https://hub.docker.com/r/yellowcooln/meshcore-health-check). No local build is required:
+
+- `yellowcooln/meshcore-health-check:latest`: production image from `main`.
+- `yellowcooln/meshcore-health-check:dev`: development image from `dev`.
+
+The published image currently targets **Linux amd64**. Check platform compatibility before installing it on an ARM host.
+
+You need Docker with the Compose plugin, access to a MeshCore MQTT feed, and the test channel's name and secret or hash.
+
+```bash
+mkdir meshcore-health-check
+cd meshcore-health-check
+mkdir -p data
+curl -fsSL https://raw.githubusercontent.com/yellowcooln/meshcore-health-check/main/.env.example -o .env
+```
+
+Edit `.env` **before starting the app**:
+
+- Set MQTT connectivity, credentials, and subscription topic for your network.
+- Set `TEST_CHANNEL_NAME` and `TEST_CHANNEL_SECRET` or `TEST_CHANNEL_HASH`.
+- For a public site, configure `SITE_URL`, trusted proxy settings, and valid Turnstile keys. The template enables Turnstile by default.
+- For a private local trial without Turnstile, explicitly set `TURNSTILE_ENABLED=false` and `TRUST_PROXY=false` when accessing it directly.
+
+Create `docker-compose.yml` alongside `.env`:
+
+```yaml
+services:
+  mesh-health-check:
+    image: yellowcooln/meshcore-health-check:latest
+    restart: unless-stopped
+    env_file:
+      - ./.env
+    environment:
+      PORT: "3090"
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "3090:3090"
+```
+
+Pull and start:
+
+```bash
+docker compose pull mesh-health-check
+docker compose up -d --no-build mesh-health-check
+```
+
+Open **http://localhost:3090**, or use your server's address. Keep the published port on a trusted network or behind your reverse proxy. In Docker, `MQTT_HOST=localhost` points at this container, not a broker on the host; use a reachable broker address or a service name on a shared network.
+
+No map key is required: dark maps use OpenFreeMap, with OpenStreetMap for light maps and fallback. External tiles still need network access. See the [deployment guide](./HOWTO.md#setup) for optional mounts and hosting details.
+
+### Build from source instead
 
 ```bash
 git clone https://github.com/yellowcooln/meshcore-health-check.git
 cd meshcore-health-check
 cp .env.example .env
-docker compose up -d --build
 ```
 
-Default local URL: `http://localhost:3090`
-
-To run the published Docker image instead, use the production branch image
-`yellowcooln/meshcore-health-check:latest`, which is built from `main`, or
-`yellowcooln/meshcore-health-check:dev`, which is built from `dev`. See
-[HOWTO.md](HOWTO.md) for a full image-based Compose example.
-
-At minimum, configure MQTT and the test channel in `.env`:
-
-- `MQTT_HOST`, `MQTT_PORT`, `MQTT_TRANSPORT`, `MQTT_TLS`
-- `MQTT_USERNAME`, `MQTT_PASSWORD` when required
-- `MQTT_TOPIC`
-- `TEST_CHANNEL_NAME`
-- `TEST_CHANNEL_SECRET` or `TEST_CHANNEL_HASH`
-
-For full setup steps, read [HOWTO.md](HOWTO.md). For every runtime variable,
-read [ENVIRONMENT.md](ENVIRONMENT.md).
-
-## Project Layout
-
-- [server.js](server.js): Express API, MQTT ingest, MeshCore decoding, session
-  matching, observer persistence, Turnstile handling, and WebSocket snapshots
-- [public/](public): dashboard, share page, landing page, styles, and service
-  worker
-- [data/observer.json](data/observer.json): observer names and coordinates
-- [data/observer-activity.json](data/observer-activity.json): rolling observer
-  packet history used for dynamic defaults
-- [data/session-results.json](data/session-results.json): retained share-link
-  session results
-- [.env.example](.env.example): runtime config template
-- [ENVIRONMENT.md](ENVIRONMENT.md): full environment variable reference
-- [HOWTO.md](HOWTO.md): deployment and operator guide
-- [CHANGES.md](CHANGES.md): release changelog
-
-## Runtime Notes
-
-- The app only decodes the configured test channel.
-- Docker Compose is the supported runtime path.
-- Keep `data/` mounted if observer profiles, observer activity, and share links
-  must survive rebuilds.
-- Leave `KNOWN_OBSERVERS` blank to let the app auto-select the top recent
-  observers. Set it to full pubkeys for a fixed default target set.
-- Set `OBSERVER_RETENTION_SECONDS=0` to keep known observers visible regardless
-  of age.
-- Share links use retained server-side results and remain available until
-  `RESULT_RETENTION_SECONDS` expires.
-- `DASH_BROKER_HOST` changes only the broker label shown in the UI. It does not
-  change the actual MQTT connection.
-- `CORESCOPE_URL` changes the matched message-hash link to CoreScope
-  `#/packets/<hash>` routes.
-- `DISTANCE_UNIT=mi` or `DISTANCE_UNIT=km` controls packet distance labels.
-
-## Validation
+Configure `.env` as above, then use the repository's source-build Compose file:
 
 ```bash
-npm run check
-npm test
 docker compose up -d --build
-curl -s http://localhost:3090/api/bootstrap
 ```
 
-Run `npm run test:smoke` when UI or routing behavior changes.
+Do not combine its `build` / `pull_policy: build` settings with the image-only example. Choose one deployment method.
 
-## Decoder
+## Configuration
 
-The app uses `@michaelhart/meshcore-decoder` for runtime MeshCore packet
-decoding. A small postinstall compatibility patch keeps the published CommonJS
-build loading cleanly on Node 18.
+See [`.env.example`](./.env.example) for template values and [ENVIRONMENT.md](./ENVIRONMENT.md) for the full reference.
+
+| Setting | Purpose |
+| --- | --- |
+| `MQTT_HOST`, `MQTT_PORT`, `MQTT_TRANSPORT`, `MQTT_TLS` | MQTT connectivity; `MQTT_URL` can override the connection URL. |
+| `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_TOPIC` | Subscriber credentials and topic. |
+| `TEST_CHANNEL_NAME`, `TEST_CHANNEL_SECRET`, `TEST_CHANNEL_HASH` | Channel used for matching test messages. |
+| `APP_TITLE`, `SITE_URL`, `DASH_BROKER_HOST` | Site branding, public URL, and display-only broker label. |
+| `KNOWN_OBSERVERS`, `OBSERVER_TOP_COUNT` | Fixed defaults or activity-ranked observer count. |
+| `REGIONS_FILE`, `ALLOWED_REGION_GROUPS`, `ALLOWED_REGIONS`, `INITIAL_REGION` | Geographic controls, allowed area, and initial selection. |
+| `DISTANCE_UNIT`, `NEARBY_DEFAULT_RADIUS` | Miles/kilometers and nearby search radius. |
+| `BROWSER_LOCATION_ENABLED` | Optional browser-location controls; location is requested only on click. |
+| `CODE_PREFIX`, `ALLOW_LONGER_TEST_CODES` | Code prefix and optional 6-16-character suffix selection. |
+| `MESHCORE_REGION_SCOPES_FILE` | Optional operator-owned YAML for public routing-scope names. |
+| `TURNSTILE_ENABLED`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` | Visitor verification. |
+| `RESULT_RETENTION_SECONDS` | How long saved result links remain available. |
+
+Geographic labels and MeshCore routing scopes are different features. Geographic filters affect observer selection; scope recognition does not change scoring or prove repeater membership. Configure your own public names using [region-scopes.example.yml](./region-scopes.example.yml), with the [read-only mount and matching limitations](./HOWTO.md#optional-meshcore-routing-scopes).
+
+Nearby selection is optional and temporary. Precise visitor coordinates stay in the browser; only selected observer keys enter the session workflow. Proximity does not guarantee RF coverage. See [nearby observer selection](./HOWTO.md#select-nearby-observers).
+
+## Updates and storage
+
+Keep `./data:/app/data` mounted to retain observer profiles, activity history, and saved share results. Back up data, `.env`, Compose overrides, and custom assets before upgrading. Do not overwrite working configuration with the template or leave old full-file frontend overrides masking newer image assets.
+
+For an image-based installation:
+
+```bash
+docker compose pull mesh-health-check
+docker compose up -d --no-build --pull never --force-recreate mesh-health-check
+```
+
+Recreation also reloads `.env`. **A plain `docker compose restart` does not.** Follow the [upgrade checklist](./HOWTO.md#upgrading-to-v142) for source-build steps and compatibility checks.
+
+Inspect startup and ingestion without creating a test session:
+
+```bash
+docker compose logs --tail=100 -f mesh-health-check
+curl -fsS http://localhost:3090/api/bootstrap
+```
+
+A successful HTTP response or MQTT connection alone does not prove RF delivery. Verify receipts with a code you deliberately transmit on the configured channel.
+
+## Development
+
+Use Node.js 24 (`nvm use` reads `.nvmrc`). From the repository root:
+
+```bash
+npm ci
+npm run check
+npm test
+npm run test:smoke
+```
+
+Use Docker Compose for runtime validation. The backend is in `server.js`, browser assets are in `public/`, and regression tests are in `test/`. See the [technical notes](./HOWTO.md#technical-notes) for renderer, decoder, and persistence details.
+
+## Credits and license
+
+The idea for this app came from Nick D from Boston.
+
+Community deployment: [UK Mesh Health Check](https://healthcheck.ukmesh.com/).
+
+Copyright (c) 2026 yellowcooln and contributors.
+
+Licensed under the [GNU General Public License version 3 only](./LICENSE) (`GPL-3.0-only`). You may use, modify, and redistribute this software under its terms. Distributed modified versions must be licensed under GPL version 3 and include the corresponding source as required by the license. This software comes without warranty.
+
+Third-party dependencies and assets retain their own licenses and notices.
+Earlier versions released under MIT remain available under those terms. Their copyright and permission notice is preserved in [LICENSES/MIT-legacy.txt](./LICENSES/MIT-legacy.txt); this does not dual-license new GPL-only changes.
+
+## About these projects
+
+I build these projects with the help of AI when I see a need for software I want to use myself. The goal is to make something useful, run it on my own systems, and share it with anyone else who might find it helpful.
+
+This is something I do for fun, in my free time outside of work and family. If you find these tools useful and would like to support the time that goes into them, a little support on [Ko-fi](https://ko-fi.com/yellowcooln) is always appreciated. No pressure. Using the software, reporting bugs, and contributing ideas helps too.
 
 ## Star History
 

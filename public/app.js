@@ -1,3 +1,8 @@
+import './map-renderer.js';
+import { renderCheckGuidance } from './check-guidance.js';
+import { nearestObservers } from './nearest-observers.js';
+import { refineLocation } from './location-refinement.js';
+
 const SESSION_STORAGE_KEY = 'mesh-health-check-session-id';
 const SESSION_HISTORY_STORAGE_KEY = 'mesh-health-check-session-history';
 const OBSERVER_ALLOWLIST_STORAGE_KEY = 'mesh-health-check-observer-allowlist';
@@ -11,6 +16,10 @@ const ui = {
   transportStatus: document.querySelector('#transport-status'),
   installAppButton: document.querySelector('#install-app-button'),
   newSessionButton: document.querySelector('#new-session-button'),
+  codeLengthControl: document.querySelector('#code-length-control'),
+  codeLength: document.querySelector('#code-length'),
+  codeLengthValue: document.querySelector('#code-length-value'),
+  codeLengthNote: document.querySelector('#code-length-note'),
   copySessionCodeButton: document.querySelector('#copy-session-code'),
   shareSessionButton: document.querySelector('#share-session'),
   sessionCode: document.querySelector('#session-code'),
@@ -42,6 +51,11 @@ const ui = {
   observerAllowlist: document.querySelector('#observer-allowlist'),
   observerAllowlistClear: document.querySelector('#observer-allowlist-clear'),
   uiThemeToggle: document.querySelector('#ui-theme-toggle'),
+  nearbyLocation: document.querySelector('#nearby-location'),
+  nearbyCenter: document.querySelector('#nearby-center'),
+  nearbyRadius: document.querySelector('#nearby-radius'),
+  nearbyStatus: document.querySelector('#nearby-status'),
+  nearbyResults: document.querySelector('#nearby-results'),
   mapObserverNote: document.querySelector('#map-observer-note'),
   mapEmpty: document.querySelector('#map-empty'),
   observerMap: document.querySelector('#observer-map'),
@@ -83,6 +97,9 @@ const mapObserverScope = document.body?.dataset?.mapObserverScope === 'directory
 
 localStorage.removeItem(SESSION_STORAGE_KEY);
 localStorage.removeItem(SESSION_HISTORY_STORAGE_KEY);
+// Observer choices are page-local; old releases persisted them in either store.
+localStorage.removeItem(OBSERVER_ALLOWLIST_STORAGE_KEY);
+sessionStorage.removeItem(OBSERVER_ALLOWLIST_STORAGE_KEY);
 
 const state = {
   snapshot: null,
@@ -90,9 +107,10 @@ const state = {
   sharedSessionId: sharedSessionIdFromLocation(),
   sharedSessionMissing: false,
   trackedSessionIds: loadTrackedSessionIds(),
-  selectedObserverKeys: loadSelectedObserverKeys(),
+  selectedObserverKeys: [],
   selectedRegionGroup: null,
   selectedRegion: null,
+  regionSelectionApplied: false,
   uiTheme: loadUiTheme(),
   sessions: new Map(),
   socket: null,
@@ -103,12 +121,20 @@ const state = {
   sessionRefreshQueued: false,
   sessionRefreshTimer: 0,
   observerAllowlistSignature: '',
+  nearbyRequest: 0,
+  nearbyCancel: null,
+  nearbyApproximate: null,
+  nearbyRadiusInitialized: false,
+  nearbyMessage: '',
+  nearbyMatches: [],
   map: {
     instance: null,
     layer: null,
     layerTheme: '',
     markers: new Map(),
+    nearbyMarker: null,
     boundsKey: '',
+    preserveNearbyViewport: false,
   },
   drawer: {
     kind: '',
@@ -133,26 +159,6 @@ function saveTrackedSessionIds() {
   sessionStorage.setItem(
     SESSION_HISTORY_STORAGE_KEY,
     JSON.stringify(state.trackedSessionIds),
-  );
-}
-
-function loadSelectedObserverKeys() {
-  try {
-    const raw = sessionStorage.getItem(OBSERVER_ALLOWLIST_STORAGE_KEY);
-    if (!raw) {
-      return [];
-    }
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveSelectedObserverKeys() {
-  sessionStorage.setItem(
-    OBSERVER_ALLOWLIST_STORAGE_KEY,
-    JSON.stringify(state.selectedObserverKeys),
   );
 }
 
@@ -317,6 +323,15 @@ function customSelectedObserverKeys() {
 }
 
 function defaultObserverKeys() {
+  if (state.selectedRegion && state.snapshot?.topObserverKeysByRegion?.[state.selectedRegion]) {
+    return state.snapshot.topObserverKeysByRegion[state.selectedRegion];
+  }
+  if (state.selectedRegionGroup && state.snapshot?.topObserverKeysByGroup?.[state.selectedRegionGroup]) {
+    return state.snapshot.topObserverKeysByGroup[state.selectedRegionGroup];
+  }
+  if (state.regionSelectionApplied && Array.isArray(state.snapshot?.topObserverKeys)) {
+    return state.snapshot.topObserverKeys;
+  }
   return configuredDefaultObserverKeys();
 }
 
@@ -366,6 +381,15 @@ function sameKeys(left, right) {
 
 function selectionDiffersFromSession(session) {
   return !sameKeys(sessionTargetKeys(session), effectiveObserverKeysForCreate());
+}
+
+function hasMeasuredResult(session) {
+  return Boolean(session && (session.messageHash || session.matchedAt || Number(session.useCount) > 0
+    || Number(session.observedCount) > 0 || session.receipts?.length));
+}
+
+function resultLabel(session) {
+  return hasMeasuredResult(session) ? session.healthLabel : 'Awaiting message';
 }
 
 function sessionCanRetarget(session) {
@@ -615,7 +639,7 @@ function signalSummary(session) {
   if (points.length === 0) {
     return {
       value: '--',
-      label: 'Awaiting telemetry.',
+      label: hasMeasuredResult(session) ? 'Signal data unavailable.' : 'Awaiting telemetry.',
       tone: 'neutral',
       points: [],
     };
@@ -772,6 +796,7 @@ function setSessionHash(hash) {
 }
 
 function healthClass(label) {
+  if (!label || label === 'Waiting' || label === 'Awaiting message') return '';
   if (label === 'VERY HEALTHY' || label === 'GOOD') {
     return 'status-good';
   }
@@ -784,7 +809,7 @@ function healthClass(label) {
 function ringColor(label) {
   if (label === 'VERY HEALTHY' || label === 'GOOD') return 'var(--good)';
   if (label === 'FAIR') return 'var(--fair)';
-  if (!label || label === 'Waiting') return 'var(--accent-strong)';
+  if (!label || label === 'Waiting' || label === 'Awaiting message') return 'var(--accent-strong)';
   return 'var(--poor)';
 }
 
@@ -807,7 +832,7 @@ function redirectToLanding() {
 async function registerPwa() {
   if ('serviceWorker' in navigator) {
     try {
-      await navigator.serviceWorker.register('/sw.js');
+      await navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' });
     } catch {
       // ignore registration failures
     }
@@ -900,7 +925,8 @@ async function createSession() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        expectedObserverKeys: usingDefaultObserverSet() ? [] : customSelectedObserverKeys(),
+        expectedObserverKeys: effectiveObserverKeysForCreate(),
+        ...(state.snapshot?.codeOptions?.maxLength === 16 ? { codeLength: Number(ui.codeLength.value) } : {}),
       }),
     });
     const session = await response.json();
@@ -1110,14 +1136,12 @@ function reconcileRegionSelection(snapshot) {
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
       state.selectedObserverKeys = [];
-      saveSelectedObserverKeys();
       return;
     }
     if (state.selectedRegion !== null && !group.regions.some((region) => region.name === state.selectedRegion)) {
       state.selectedRegion = null;
     }
-    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
-    saveSelectedObserverKeys();
+    if (state.selectedObserverKeys.length > 0) state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
     return;
   }
 
@@ -1126,25 +1150,20 @@ function reconcileRegionSelection(snapshot) {
     if (!regionExists) {
       state.selectedRegion = null;
       state.selectedObserverKeys = [];
-      saveSelectedObserverKeys();
       return;
     }
     if (hasGroups) {
       const parent = regions.find((entry) => entry.regions.some((region) => region.name === state.selectedRegion));
       state.selectedRegionGroup = parent?.group || null;
     }
-    state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
-    saveSelectedObserverKeys();
+    if (state.selectedObserverKeys.length > 0) state.selectedObserverKeys = observerKeysForRegionSelection(snapshot);
   }
 }
 
 function applyRegionSelection() {
-  if (state.selectedRegionGroup === null && state.selectedRegion === null) {
-    state.selectedObserverKeys = [];
-  } else {
-    state.selectedObserverKeys = observerKeysForRegionSelection(state.snapshot);
-  }
-  saveSelectedObserverKeys();
+  clearNearbySelection();
+  state.regionSelectionApplied = true;
+  state.selectedObserverKeys = observerKeysForRegionSelection(state.snapshot);
   render();
   scheduleSessionRetarget();
 }
@@ -1157,7 +1176,7 @@ function observerKeysForRegionSelection(snapshot = state.snapshot) {
         return observer.region === state.selectedRegion
           && (!state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup);
       }
-      return observer.regionGroup === state.selectedRegionGroup;
+      return !state.selectedRegionGroup || observer.regionGroup === state.selectedRegionGroup;
     })
     .map((observer) => observer.key);
 }
@@ -1166,6 +1185,8 @@ function renderObserverAllowlist() {
   renderRegionFilter();
   const directory = selectableObservers();
   const selected = new Set(effectiveObserverKeysForCreate());
+  const selectionSummary = document.querySelector('#observer-selection-summary');
+  if (selectionSummary) selectionSummary.textContent = `${usingDefaultObserverSet() ? 'Default' : 'Custom'}: ${selected.size} observer${selected.size === 1 ? '' : 's'}${state.selectedRegion || state.selectedRegionGroup ? ` in ${state.selectedRegion || state.selectedRegionGroup}` : ''}.`;
   ui.observerAllowlistClear.disabled = usingDefaultObserverSet();
 
   if (directory.length === 0) {
@@ -1216,6 +1237,7 @@ function renderObserverAllowlist() {
     `;
     const checkbox = item.querySelector('input');
     checkbox.addEventListener('change', () => {
+      clearNearbySelection();
       const next = new Set(effectiveObserverKeysForCreate());
       if (checkbox.checked) {
         next.add(row.key);
@@ -1225,7 +1247,6 @@ function renderObserverAllowlist() {
       state.selectedRegionGroup = null;
       state.selectedRegion = null;
       state.selectedObserverKeys = [...next];
-      saveSelectedObserverKeys();
       render();
       scheduleSessionRetarget();
     });
@@ -1266,9 +1287,9 @@ function applySiteBranding(snapshot) {
   }
   if (isSharePage()) {
     ui.heroEyebrow.textContent = 'Shared Result';
-    ui.heroTitle.textContent = 'Observer coverage someone shared with you.';
-    ui.heroDescriptionPrefix.textContent = 'This page is read-only. Review the result from';
-    ui.heroDescriptionSuffix.textContent = 'or open the full dashboard to run your own check.';
+    ui.heroTitle.textContent = 'Shared MeshCore coverage result';
+    ui.heroDescriptionPrefix.textContent = 'Review the saved result from';
+    ui.heroDescriptionSuffix.textContent = 'in this read-only view.';
     return;
   }
   ui.heroEyebrow.textContent = eyebrow;
@@ -1285,7 +1306,7 @@ function updateTransportStatus(snapshot) {
 
   ui.transportStatus.classList.remove('offline', 'waiting', 'online');
   if (isSharePage()) {
-    ui.transportStatus.textContent = 'Shared result — live MQTT transport is not used on this page.';
+    ui.transportStatus.textContent = 'Saved result. This page does not use the live MQTT connection.';
     return;
   }
 
@@ -1334,8 +1355,11 @@ function mapKnownObservers(session) {
   let source = [...mergedDirectory.values()];
   if (mapObserverScope === 'expected') {
     const directoryByKey = new Map(source.map((observer) => [observer.key, observer]));
-    const expected = Array.isArray(session?.expectedObservers)
-      ? session.expectedObservers.filter((observer) => observer?.key)
+    // The dashboard map previews the live selection, not a retained code's
+    // immutable targets. Shared results continue to map their original targets.
+    const mapSession = isSharePage() ? session : targetPreviewSession();
+    const expected = Array.isArray(mapSession?.expectedObservers)
+      ? mapSession.expectedObservers.filter((observer) => observer?.key)
       : [];
     if (expected.length > 0) {
       source = expected.map((observer) => {
@@ -1371,6 +1395,178 @@ function mapKnownObservers(session) {
     }));
 }
 
+function cancelNearbyRequest() {
+  state.nearbyRequest += 1;
+  state.nearbyCancel?.();
+  state.nearbyCancel = null;
+  state.nearbyApproximate = null;
+  document.querySelector('#nearby-approximate').hidden = true;
+  if (ui.nearbyLocation) ui.nearbyLocation.disabled = false;
+}
+
+function clearNearbySelection() {
+  cancelNearbyRequest();
+  state.map.preserveNearbyViewport = false;
+  state.map.nearbyMarker?.remove();
+  state.map.nearbyMarker = null;
+  state.nearbyMessage = '';
+  state.nearbyMatches = [];
+}
+
+function nearbyDistanceUnit() {
+  return state.snapshot?.observerStats?.distanceUnit === 'km' ? 'km' : 'mi';
+}
+
+function browserLocationEnabled() {
+  return Boolean(state.snapshot) && state.snapshot.observerStats?.browserLocationEnabled !== false && !isSharePage();
+}
+
+function renderScoreSelectionNote() {
+  const note = document.querySelector('.score-selection-note');
+  if (!note) return;
+  if (isSharePage()) {
+    note.textContent = 'This score reflects the observers saved with this result.';
+    return;
+  }
+  const { regions } = regionFilterOptions();
+  const hasRegions = regions.some((entry) => entry.regions.length > 0);
+  const scope = !hasRegions ? '' : state.selectedRegion
+    ? ` in the selected region (${escapeHtml(state.selectedRegion)})`
+    : state.selectedRegionGroup
+      ? ` in the selected region group (${escapeHtml(state.selectedRegionGroup)})`
+      : ' across all available regions';
+  const action = browserLocationEnabled() ? 'Use my location' : 'Use map center';
+  const regionalAction = hasRegions ? ' You can also choose a region under <strong>Change observers</strong> to narrow the default set.' : '';
+  note.innerHTML = `Your score reflects the selected observers. Automatic defaults favor the most active MQTT observers${scope} - not necessarily the best fit for your exact location. Open <strong>Change observers</strong> and choose <strong>${action}</strong> under Nearby observers to find a more relevant set.${regionalAction}`;
+}
+
+function renderNearbySelection() {
+  if (!ui.nearbyStatus || !ui.nearbyResults) return;
+  const enabled = browserLocationEnabled();
+  ui.nearbyLocation.hidden = !enabled;
+  if (!enabled) cancelNearbyRequest();
+  const locationNote = document.querySelector('#nearby-location-note');
+  if (locationNote) locationNote.textContent = enabled
+    ? 'Location stays in your browser. If unavailable, we use the map center. Reload restores defaults.'
+    : 'Pan the map and choose Use map center. Reload restores defaults.';
+  renderScoreSelectionNote();
+  const unit = nearbyDistanceUnit();
+  if (state.snapshot && !state.nearbyRadiusInitialized) {
+    ui.nearbyRadius.value = String(state.snapshot.observerStats?.nearbyDefaultRadius || 100);
+    state.nearbyRadiusInitialized = true;
+  }
+  for (const option of ui.nearbyRadius.options) option.textContent = `${option.value} ${unit}`;
+  ui.nearbyStatus.textContent = state.nearbyMessage
+    || `Optional: find nearby observers for this visit. Current target: ${effectiveObserverKeysForCreate().length} observers.`;
+  ui.nearbyResults.replaceChildren();
+  for (const observer of state.nearbyMatches) {
+    const item = document.createElement('li');
+    item.textContent = `${observer.label} - ${(observer.distanceKm * (unit === 'mi' ? 0.621371 : 1)).toFixed(1)} ${unit}`;
+    ui.nearbyResults.appendChild(item);
+  }
+}
+
+function selectNearbyObservers(origin, source, prefix = '') {
+  const unit = nearbyDistanceUnit();
+  const radius = Number(ui.nearbyRadius.value);
+  const radiusKm = unit === 'mi' ? radius / 0.621371 : radius;
+  const matches = nearestObservers({
+    observers: selectableObservers(), origin, radiusKm,
+    windowSeconds: state.snapshot?.observerStats?.windowSeconds,
+  });
+  // Keep the chosen point only in this transient map layer, never storage or
+  // API payloads. Do not pan to it or include it in observer fit bounds.
+  const map = ensureObserverMap();
+  state.map.nearbyMarker?.remove();
+  state.map.nearbyMarker = map ? window.L.circleMarker([origin.lat, origin.lon], {
+    radius: 6, color: '#ffffff', weight: 2, fillColor: '#3b82f6',
+    fillOpacity: 1, className: 'nearby-origin-dot', pane: 'tooltipPane',
+  }).bindTooltip(`Nearby search: ${source}`).addTo(map) : null;
+  state.nearbyMatches = matches.map((observer) => ({
+    label: observerDisplayLabel(observer), distanceKm: observer.distanceKm,
+  }));
+  ui.nearbyLocation.disabled = false;
+  if (matches.length === 0) {
+    state.nearbyMessage = `${prefix}No active observers with valid coordinates within ${radius} ${unit} of ${source}. Selection unchanged (${effectiveObserverKeysForCreate().length} current targets). Try a wider radius or pan the map.`;
+    renderNearbySelection();
+    return;
+  }
+  state.selectedRegionGroup = null;
+  state.selectedRegion = null;
+  state.selectedObserverKeys = matches.map((observer) => observer.key);
+  state.map.preserveNearbyViewport = source === 'map center';
+  state.nearbyMessage = `${prefix}${matches.length} selected within ${radius} ${unit} of ${source}. Reload restores the website default set.`;
+  render();
+  scheduleSessionRetarget();
+}
+
+function selectNearbyMapCenter(prefix = '') {
+  const map = ensureObserverMap();
+  if (!map) {
+    ui.nearbyLocation.disabled = false;
+    state.nearbyMessage = `${prefix}Map unavailable. Selection unchanged; use the manual observer controls.`;
+    renderNearbySelection();
+    return;
+  }
+  const center = map.getCenter().wrap();
+  selectNearbyObservers({ lat: center.lat, lon: center.lng }, 'map center', prefix);
+}
+
+function requestNearbyLocation() {
+  if (!browserLocationEnabled()) return;
+  cancelNearbyRequest();
+  const request = state.nearbyRequest;
+  if (!window.isSecureContext || !navigator.geolocation) {
+    selectNearbyMapCenter('Location unavailable (HTTPS or browser support required). Using map center. ');
+    return;
+  }
+  ui.nearbyLocation.disabled = true;
+  state.nearbyMessage = 'Refining browser location for up to 12 seconds. You can use map center instead.';
+  renderNearbySelection();
+  state.nearbyCancel = refineLocation({ geolocation: navigator.geolocation, complete: ({ fix, approximate, error }) => {
+    if (request !== state.nearbyRequest) return;
+    ui.nearbyLocation.disabled = false;
+    if (!fix) {
+      const reason = error?.code === 1 ? 'denied' : error?.code === 3 ? 'timed out' : 'unavailable';
+      selectNearbyMapCenter(`Location ${reason}. Using map center. `);
+      return;
+    }
+    const unit = nearbyDistanceUnit();
+    const distance = fix.accuracy / 1000 * (unit === 'mi' ? 0.621371 : 1);
+    const accuracyNote = Number.isFinite(distance)
+      ? `Browser-reported accuracy: about ${distance.toFixed(distance < 1 ? 2 : 1)} ${unit}. `
+      : 'Browser accuracy unavailable. ';
+    if (approximate) {
+      state.nearbyApproximate = { fix, accuracyNote };
+      state.nearbyMessage = `${accuracyNote}This location is approximate. Use it or choose map center; selection unchanged.`;
+      document.querySelector('#nearby-approximate').hidden = false;
+      renderNearbySelection();
+    } else {
+      selectNearbyObservers(fix, 'browser location estimate', accuracyNote);
+    }
+  } });
+}
+
+window.addEventListener('pagehide', clearNearbySelection);
+document.querySelector('#nearby-approximate')?.addEventListener('click', () => {
+  if (!browserLocationEnabled()) return;
+  const pending = state.nearbyApproximate;
+  if (!pending) return;
+  clearNearbySelection();
+  selectNearbyObservers(pending.fix, 'approximate browser location', pending.accuracyNote);
+});
+ui.nearbyLocation?.addEventListener('click', requestNearbyLocation);
+ui.nearbyCenter?.addEventListener('click', () => {
+  if (!state.snapshot || isSharePage()) return;
+  clearNearbySelection();
+  selectNearbyMapCenter();
+});
+ui.nearbyRadius?.addEventListener('change', () => {
+  cancelNearbyRequest();
+  state.nearbyMessage = `Radius ${ui.nearbyRadius.value} ${nearbyDistanceUnit()} not applied. Choose a location source to search again. Previous results and selection unchanged.`;
+  renderNearbySelection();
+});
+
 function ensureObserverMap() {
   if (state.map.instance || !ui.observerMap || !window.L) {
     return state.map.instance;
@@ -1383,15 +1579,80 @@ function ensureObserverMap() {
   return state.map.instance;
 }
 
+function openStreetMapLayer() {
+  return window.L.tileLayer('/tiles/osm/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    className: state.uiTheme === 'dark' ? 'observer-basemap-dark' : 'observer-basemap-light',
+    attribution: '&copy; OpenStreetMap contributors',
+  });
+}
+
 function currentTileLayer() {
   if (!window.L) {
     return null;
   }
-  return window.L.tileLayer('/tiles/osm/{z}/{x}/{y}.png', {
+  const cartoBasemapKey = String(state.snapshot?.map?.cartoBasemapKey || '').trim();
+  if (state.uiTheme !== 'light' && !cartoBasemapKey && window.L.maplibreGL && window.maplibregl
+    && (typeof window.maplibregl.supported !== 'function' || window.maplibregl.supported())) {
+    return window.L.maplibreGL({
+      style: 'https://tiles.openfreemap.org/styles/dark',
+      attributionControl: { customAttribution:
+        '<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> '
+        + '<a href="https://www.openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> '
+        + 'Data from <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
+      },
+    });
+  }
+  if (state.uiTheme === 'light' || !cartoBasemapKey) {
+    return openStreetMapLayer();
+  }
+  const tileUrl = 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+    + `?key=${encodeURIComponent(cartoBasemapKey)}`;
+  return window.L.tileLayer(tileUrl, {
     maxZoom: 19,
-    className: state.uiTheme === 'dark' ? 'observer-basemap-dark' : 'observer-basemap-light',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+    subdomains: 'abcd',
+    // CARTO website-authorized keys need the origin, never the page path or query.
+    referrerPolicy: 'strict-origin',
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
   });
+}
+
+function installBasemap(mapInstance) {
+  if (state.map.layer) mapInstance.removeLayer(state.map.layer);
+  state.map.layerTheme = state.uiTheme;
+  let layer;
+  const fallback = () => {
+    // A late provider error must not replace a newer theme's layer.
+    if (state.map.layer !== layer) return;
+    if (layer && mapInstance.hasLayer(layer)) mapInstance.removeLayer(layer);
+    state.map.layer = openStreetMapLayer().addTo(mapInstance);
+  };
+  try {
+    layer = currentTileLayer();
+    state.map.layer = layer;
+    if (!layer) return;
+    if (layer.getMaplibreMap) {
+      // The bridge's onRemove assumes construction succeeded. Leaflet registers
+      // its events before onAdd; remove the partial layer even if WebGL throws.
+      const onRemove = layer.onRemove;
+      layer.onRemove = function (map) {
+        if (this.getMaplibreMap()) onRemove.call(this, map);
+        else this.getContainer()?.remove();
+      };
+    }
+    layer.addTo(mapInstance);
+    const renderer = layer.getMaplibreMap?.();
+    if (renderer) {
+      const onError = () => window.setTimeout(fallback, 0);
+      renderer.on('error', onError);
+      layer.once('remove', () => renderer.off('error', onError));
+    }
+  } catch {
+    // Unsupported WebGL, missing renderer assets and provider failures must not
+    // prevent observer markers, popups, or nearby selection from rendering.
+    state.map.layer = layer;
+    fallback();
+  }
 }
 
 function markerIcon(observer) {
@@ -1417,15 +1678,7 @@ function renderObserverMap(session) {
   }
 
   if (!state.map.layer || state.map.layerTheme !== state.uiTheme) {
-    const nextLayer = currentTileLayer();
-    if (state.map.layer) {
-      mapInstance.removeLayer(state.map.layer);
-    }
-    state.map.layer = nextLayer;
-    state.map.layerTheme = state.uiTheme;
-    if (nextLayer) {
-      nextLayer.addTo(mapInstance);
-    }
+    installBasemap(mapInstance);
   }
 
   const activeKeys = new Set(locatedObservers.map((observer) => observer.key));
@@ -1457,10 +1710,12 @@ function renderObserverMap(session) {
 
   const boundsKey = locatedObservers.map((observer) => observer.key).join('|');
   if (bounds.length > 0 && boundsKey !== state.map.boundsKey) {
-    mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
+    if (!state.map.preserveNearbyViewport) {
+      mapInstance.fitBounds(bounds, { padding: [26, 26], maxZoom: 10 });
+    }
     state.map.boundsKey = boundsKey;
   } else if (bounds.length === 0 && state.map.boundsKey !== '__empty__') {
-    mapInstance.setView([20, 0], 2);
+    if (!state.map.preserveNearbyViewport) mapInstance.setView([20, 0], 2);
     state.map.boundsKey = '__empty__';
   }
   window.setTimeout(() => {
@@ -1468,7 +1723,35 @@ function renderObserverMap(session) {
   }, 0);
 }
 
+function meshcoreScopeText(scopes) {
+  if (!Array.isArray(scopes) || !scopes.length) return 'Not present (legacy receipt)';
+  return scopes.map(scope => {
+    const names = Array.isArray(scope.names) ? scope.names.join(', ') : '';
+    switch (scope.state) {
+      case 'known': return names;
+      case 'ambiguous': return `Ambiguous: ${names}`;
+      case 'unscoped': return 'No scopes observed';
+      case 'unknown': return 'Scoped, unknown';
+      case 'disabled': return 'Matching disabled (scoped)';
+      case 'not-present': return 'Not present (legacy receipt)';
+      default: return 'Unavailable';
+    }
+  }).join(' · ');
+}
+
+function renderMeshcoreScopes(session) {
+  const element = document.querySelector('#meshcore-scopes');
+  if (!element) return;
+  const receipts = session?.receipts || [];
+  const descriptions = receipts.flatMap(receipt =>
+    Array.isArray(receipt.meshcoreScopes) && receipt.meshcoreScopes.length
+      ? receipt.meshcoreScopes.map(scope => meshcoreScopeText([scope]))
+      : [meshcoreScopeText(null)]);
+  element.textContent = descriptions.length ? [...new Set(descriptions)].join(' · ') : 'No scopes observed';
+}
+
 function renderReceipts(session) {
+  renderMeshcoreScopes(session);
   const receipts = Array.isArray(session?.receipts) ? session.receipts : [];
   ui.receipts.innerHTML = '';
   ui.receiptsEmpty.classList.toggle('hidden', receipts.length > 0);
@@ -1526,6 +1809,7 @@ function renderReceipts(session) {
       <p class="receipt-meta">
         Seen ${receipt.count} time${receipt.count === 1 ? '' : 's'}${metrics ? ` · ${metrics}` : ''}
       </p>
+      <p class="receipt-meta receipt-scope">MeshCore scopes: ${escapeHtml(meshcoreScopeText(receipt.meshcoreScopes))}</p>
       <div class="receipt-meter-grid">
         <div class="receipt-meter">
           <span>Signal</span>
@@ -1611,10 +1895,10 @@ function renderHistory(sessions) {
     item.innerHTML = `
       <div>
         <div class="history-code">${escapeHtml(session.code)}</div>
-        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(session.healthLabel)}</p>
+        <p>${session.observedCount}/${session.expectedCount} observers · ${escapeHtml(resultLabel(session))}</p>
       </div>
       <div>
-        <strong class="${healthClass(session.healthLabel)}">${session.healthPercent}%</strong>
+        <strong class="${healthClass(resultLabel(session))}">${hasMeasuredResult(session) ? `${session.healthPercent}%` : '--'}</strong>
         <p>${formatTime(session.createdAt)}</p>
       </div>
     `;
@@ -1819,8 +2103,8 @@ function buildDrawerContent() {
               <div class="drawer-list">
                 ${historySessions.map((entry) => drawerListItem(
                   entry.code,
-                  `${entry.observedCount}/${entry.expectedCount} observers · ${entry.healthPercent}%`,
-                  `${entry.healthLabel} · ${formatTime(entry.createdAt)}`,
+                  `${entry.observedCount}/${entry.expectedCount} observers · ${hasMeasuredResult(entry) ? `${entry.healthPercent}%` : 'Unscored'}`,
+                  `${resultLabel(entry)} · ${formatTime(entry.createdAt)}`,
                 )).join('')}
               </div>
             </section>
@@ -1907,6 +2191,13 @@ function render() {
     return;
   }
   applyUiTheme();
+  renderNearbySelection();
+  if (ui.codeLengthNote) {
+    ui.codeLengthNote.textContent = `Hex characters after ${snapshot.codeOptions?.prefix || 'MHC'}-. Applies to new codes only.`;
+  }
+  if (ui.codeLengthControl) {
+    ui.codeLengthControl.hidden = snapshot.codeOptions?.maxLength !== 16 || isSharePage();
+  }
 
   const channelLabel = `#${snapshot.testChannel.name}`;
   const historySessions = state.trackedSessionIds
@@ -1914,7 +2205,17 @@ function render() {
     .filter(Boolean);
 
   const session = currentSession();
+  renderCheckGuidance(document, { session, channel: channelLabel, shared: isSharePage(),
+    missing: state.sharedSessionMissing, connected: Boolean(snapshot.mqtt.connected) });
   ui.newSessionButton.disabled = false;
+  const pendingSelection = Boolean(session && !isSharePage() && selectionDiffersFromSession(session) && !sessionCanRetarget(session));
+  const nextCodeSelection = document.querySelector('#next-code-selection');
+  if (nextCodeSelection) {
+    nextCodeSelection.hidden = !pendingSelection;
+    document.querySelector('#next-code-note').textContent = pendingSelection
+      ? `Next code: ${effectiveObserverKeysForCreate().length} observers selected for the map. Current code keeps its ${session.expectedCount} targets.`
+      : '';
+  }
   ui.copySessionCodeButton.disabled = !session;
   ui.shareSessionButton.disabled = !session?.shareUrl;
   applySiteBranding(snapshot);
@@ -1942,7 +2243,7 @@ function render() {
     setSessionHash('');
     ui.healthLabel.textContent = 'Waiting';
     ui.healthLabel.className = '';
-    ui.healthPercent.innerHTML = '<span class="score-num">0</span><span class="score-unit">%</span>';
+    ui.healthPercent.textContent = '--';
     ui.observedCount.textContent = '0 / 0';
     ui.repeaterCount.textContent = '0';
     if (ui.longestPacketDistance) {
@@ -1975,9 +2276,11 @@ function render() {
   ui.sessionShareNote.textContent = `Share link available until ${formatDateTime(session.resultExpiresAt)}.`;
   ui.sessionStatus.textContent = session.status.toUpperCase();
   setSessionHash(session.messageHash);
-  ui.healthLabel.textContent = session.healthLabel;
-  ui.healthLabel.className = healthClass(session.healthLabel);
-  ui.healthPercent.innerHTML = `<span class="score-num">${session.healthPercent}</span><span class="score-unit">%</span>`;
+  ui.healthLabel.textContent = resultLabel(session);
+  ui.healthLabel.className = healthClass(resultLabel(session));
+  ui.healthPercent.innerHTML = hasMeasuredResult(session)
+    ? `<span class="score-num">${session.healthPercent}</span><span class="score-unit">%</span>`
+    : '<span class="score-num">--</span>';
   ui.observedCount.textContent = `${session.observedCount} / ${session.expectedCount}`;
   ui.repeaterCount.textContent = String(session.repeaterCount || 0);
   if (ui.longestPacketDistance) {
@@ -1996,12 +2299,12 @@ function render() {
   ui.channelName.textContent = session.channelName ? `#${session.channelName}` : channelLabel;
   ui.messagePreview.textContent = session.messageBody || `Waiting for your ${channelLabel} message.`;
   ui.messagePreview.title = session.messageBody || '';
-  const showTargetPreview = selectionDiffersFromSession(session);
+  const showTargetPreview = !isSharePage() && sessionCanRetarget(session) && selectionDiffersFromSession(session);
   ui.expectedSource.textContent = showTargetPreview
     ? targetPreviewLabel()
     : sessionObserverSourceLabel(session);
 
-  updateRing(session.healthPercent, session.healthLabel);
+  updateRing(hasMeasuredResult(session) ? session.healthPercent : 0, resultLabel(session));
   renderObserverAllowlist();
   renderExpectedObservers(showTargetPreview ? targetPreviewSession() : session);
   renderObserverMap(session);
@@ -2013,6 +2316,9 @@ function render() {
 }
 
 function applySnapshot(snapshot) {
+  if (!state.snapshot && snapshot.defaultRegions?.length === 1) {
+    state.selectedRegion = snapshot.defaultRegions[0];
+  }
   const previousRegionGroup = state.selectedRegionGroup;
   const previousRegion = state.selectedRegion;
   const previousObserverKeys = state.selectedObserverKeys;
@@ -2078,7 +2384,7 @@ async function refreshTrackedSessions() {
 
 function showDashboardError() {
   if (ui.transportStatus) {
-    ui.transportStatus.textContent = 'Dashboard connection unavailable — retrying.';
+    ui.transportStatus.textContent = 'Dashboard connection unavailable. Retrying.';
     ui.transportStatus.classList.remove('waiting', 'online');
     ui.transportStatus.classList.add('offline');
   }
@@ -2140,7 +2446,7 @@ function connectSocket() {
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const socket = new WebSocket(`${protocol}//${window.location.host}`);
+  const socket = new WebSocket(`${protocol}//${window.location.host}${state.snapshot?.websocket?.path || '/'}`);
   state.socket = socket;
 
   socket.addEventListener('message', (event) => {
@@ -2171,15 +2477,23 @@ async function bootstrap() {
   }
   if (isSharedRoute()) {
     render();
-  } else if (!currentSession()) {
+  } else if (!currentSession() || (sessionCanRetarget(currentSession()) && selectionDiffersFromSession(currentSession()))) {
     await createSession();
   } else {
     render();
   }
-  connectSocket();
+  if (!isSharePage()) connectSocket();
 }
 
+ui.codeLength?.addEventListener('input', () => {
+  ui.codeLengthValue.value = ui.codeLength.value;
+});
+
 ui.newSessionButton.addEventListener('click', () => {
+  createSession();
+});
+
+document.querySelector('#apply-observer-selection')?.addEventListener('click', () => {
   createSession();
 });
 
@@ -2196,13 +2510,20 @@ ui.shareSessionButton.addEventListener('click', () => {
 });
 
 ui.observerAllowlistClear.addEventListener('click', () => {
+  clearNearbySelection();
+  if (state.snapshot?.defaultObserverSource === 'configured') {
+    state.selectedRegionGroup = null;
+    state.selectedRegion = null;
+    state.regionSelectionApplied = false;
+    state.selectedObserverKeys = [];
+    render();
+    scheduleSessionRetarget();
+    return;
+  }
   if (usingDefaultObserverSet()) {
     return;
   }
-  state.selectedRegionGroup = null;
-  state.selectedRegion = null;
   state.selectedObserverKeys = [];
-  saveSelectedObserverKeys();
   render();
   scheduleSessionRetarget();
 });

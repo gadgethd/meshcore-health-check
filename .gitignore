@@ -1,4 +1,5 @@
 node_modules/
+region-scopes.yml
 .env
 .env.*
 !.env.example
@@ -45,3 +46,5 @@ backup-*/
 *.orig
 .tokensave/
 .fix-backups-healthmaps-20260908/
+
+.taste-skill/

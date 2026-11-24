@@ -2,7 +2,43 @@
 
 Copy `.env.example` to `.env` and set only the values your deployment needs.
 Runtime configuration should stay in `.env`; do not hardcode deployment values
-in source files.
+in source files. After editing `.env`, recreate the Compose service with
+`docker compose up -d --no-build --pull never --force-recreate mesh-health-check`
+when the intended image is already built or pulled. `docker compose restart`
+alone does not reload Compose's `env_file` values. See the source-build and
+published-image upgrade paths in [HOWTO.md](HOWTO.md#upgrading-to-v140).
+
+## MeshCore routing scopes (not geographic map regions)
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MESHCORE_REGION_SCOPES_FILE` | blank | Optional readable local YAML file, loaded at startup. Blank disables public-name matching; configured missing/unreadable/invalid files fail startup. Sole key `regions` is a list of public region-name strings; `regions: []` is valid. Case preserved, implicit `#`, normalized duplicates rejected. No remote fetching or private `$` scopes/keys. |
+
+Limits: 65536-byte regular UTF-8 file and 1024 names. Each name must fit
+firmware storage: at most **30 UTF-8 bytes as written**, including an explicit
+`#`. A bare 30-byte name gains its implicit `#` after storage; an explicit
+hashtag therefore allows at most 29 body bytes. Oversized names are rejected,
+never truncated. Names must satisfy the firmware byte-character predicate and
+the public-only restrictions: no empty/whitespace/control/wildcard names,
+internal `#`, `$` private names, or firmware-invalid punctuation such as `.` and
+`/`. Accented UTF-8 names and hyphens remain supported. Nonstrings,
+aliases/anchors, custom tags, extra mapping keys and documents are rejected. See [HOWTO.md](HOWTO.md#optional-meshcore-routing-scopes)
+for copying the empty example, read-only Docker bind and recreation steps.
+Changing this file requires recreation/restart; changing `.env` requires
+recreation, not just `docker compose restart`.
+
+Bootstrap exposes only `meshcoreScopes: {enabled, count}`, never the operator
+file path or configured list. Session API/persistence stores each observer's
+distinct `receipts[].meshcoreScopes` observations as `{state, names}` objects.
+States: `known` (one candidate), `ambiguous` (multiple), `unknown`, `unscoped`,
+`disabled`, `unavailable`, `not-present` (legacy). Names are the normalized
+matched public strings only; the UI displays a single `known` name directly,
+without a Candidate prefix, while `ambiguous` keeps its explicit label.
+Unknown/disabled/unavailable/unscoped/legacy use an empty names list. Stored
+results survive changed/disabled configuration and are never rematched on
+read/share. Transport codes are packet-dependent 16-bit
+HMACs, not stable IDs or evidence of repeater membership. Geographic map
+configuration, channel matching, observer selection and scoring are unaffected.
 
 ## App
 
@@ -15,11 +51,30 @@ in source files.
 | `APP_DESCRIPTION` | Generated coverage description | Site description and social metadata. |
 | `SITE_URL` | blank | Public site URL used for generated absolute share links, social metadata, and the identifying User-Agent/Referer on server-side OpenStreetMap tile requests. Set this to the public HTTPS origin behind a reverse proxy. No map API key is required. |
 | `CORESCOPE_URL` | blank | Optional CoreScope root URL. When set, matched message hashes link to `#/packets/<hash>`. |
+| `CARTO_BASEMAP_KEY` | blank | Optional public browser key selecting CARTO Dark Matter raster tiles in dark mode. Blank uses keyless OpenFreeMap Dark via MapLibre. Light mode always uses OpenStreetMap raster tiles. |
 | `EXTERNAL_LINK_URL` | blank | Optional HTTP(S) hero/control-center external link URL. Other URL schemes are rejected. |
 | `EXTERNAL_LINK_LABEL` | blank | Label for the optional external link. |
 | `LOG_LEVEL` | `info` | Use `debug` only while troubleshooting ingest or decode behavior. |
 | `TRUST_PROXY` | `1` | Express proxy trust setting. Use `1` behind one trusted reverse proxy or `false` for direct access so client IP rate limits cannot be spoofed with forwarded headers. |
-| `DISTANCE_UNIT` | `mi` | Distance labels for packet-path estimates. Use `mi` or `km`. |
+| `CODE_PREFIX` | `MHC` | Prefix for generated test codes, such as `MHC-1A2B3C`. Trimmed and uppercased; use 1-8 ASCII letters or digits. Invalid values fall back to `MHC`. Applies only to new codes, independently of the 6-16 hex suffix length; existing results and share links are preserved. Recreate the Compose service after editing `.env`; restart alone does not reload it. |
+| `DISTANCE_UNIT` | `mi` | Distance labels for packet-path estimates and nearby observer distances/search radii. Use `mi` or `km`; the nearby radius uses that unit. |
+| `BROWSER_LOCATION_ENABLED` | `true` | Offer opt-in Use my location. False hides browser/approximate location controls, denies geolocation via Permissions-Policy, and points guidance to Use map center. Map-center, radius, region and manual selection remain available. Recreate the Compose service after editing `.env`; restart alone does not reload it. Blank uses the default; case-insensitive `1`, `true`, `yes`, `on` enable it; all other nonblank values disable it (the standard boolean parser). |
+| `NEARBY_DEFAULT_RADIUS` | `100` | Initial/reload nearby radius in `DISTANCE_UNIT`. Allowed values: 5, 10, 15, 20, 25, 50, 75, 100, 150, 200. Other values fail startup with an explicit error. Snapshot updates preserve the visitor's choice. |
+
+No map key is required: dark mode defaults to OpenFreeMap, with MapLibre GL JS
+6.16.0 and its Leaflet bridge 0.1.4 served locally, including the ESM renderer
+and self-contained same-origin module worker. WebGL2 is required for vector
+rendering. Browsers contact only `tiles.openfreemap.org` for the dark style, tiles,
+sprites and fonts. OpenStreetMap raster tiles are the fallback if WebGL or the
+vector provider fails; observer markers, popups and nearby selection remain usable.
+External map resources are not cached by the app's service worker.
+
+If choosing CARTO instead, keep its project key in `.env`, not Git. The key is
+visible in browser tile request URLs, so scope it to the deployment hostnames.
+Only CARTO tile images use `referrerPolicy: strict-origin`: CARTO receives the
+site origin needed for hostname authorization, never the dashboard/share path
+or query string. The global `Referrer-Policy: no-referrer` remains unchanged
+for other resources and links. No reverse-proxy header changes are required.
 
 ## Storage
 
@@ -64,43 +119,62 @@ The backend keeps packet handling scoped to the configured test channel.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `SESSION_TTL_SECONDS` | `600` | Active code lifetime. |
+| `ALLOW_LONGER_TEST_CODES` | `false` | Opt in to a Code length slider beside the code controls: 6-16 hex characters after `MHC-`, step 1, initially 6. False hides the slider and the server rejects non-6 requests. Only newly generated codes use the chosen length; retained codes, targets and results are unchanged. Recreate the Compose service after editing `.env`; restart alone does not reload it. Blank uses false; case-insensitive `1`, `true`, `yes`, `on` enable it; other nonblank values disable it. |
 | `RESULT_RETENTION_SECONDS` | `604800` | How long retained share results stay available. |
 | `MAX_USES_PER_CODE` | `3` | Maximum matching messages per generated code. |
 | `SESSION_RATE_WINDOW_SECONDS` | `600` | Rate-limit window for creating sessions. |
 | `SESSION_RATE_MAX` | `30` | Max session creations per rate-limit window. |
 | `MAX_RATE_LIMIT_BUCKETS` | `10000` | Maximum number of in-memory rate-limit identities retained. |
 
+The nonsecret bootstrap/snapshot `codeOptions` object reports `minLength: 6`,
+`defaultLength: 6`, and `maxLength: 6` (disabled) or `16` (enabled). The optional
+`POST /api/sessions` JSON field `codeLength` must be a number that is an integer
+6-16; omitted means 6. Strings, null, fractions and out-of-range values return
+400 `invalid_code_length`, as do non-6 requests when disabled. Generation retries
+collisions without changing length; after 32 collisions it returns 503
+`code_generation_exhausted` so the visitor can retry. No existing code is replaced.
+
 ## Observers
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `KNOWN_OBSERVERS` | blank | Comma-separated full observer pubkeys for a fixed default target set. |
+| `KNOWN_OBSERVERS` | blank | Comma-separated full pubkeys for legacy fixed defaults when `INITIAL_REGION` is blank. Default Set restores these fixed keys and clears temporary region filters when fixed defaults are active. Initial-region defaults use activity ranking instead. |
 | `OBSERVER_TOP_WINDOW_DAYS` | `7` | Lookback window for dynamic top-observer ranking. |
-| `OBSERVER_TOP_COUNT` | `10` | Number of observers auto-selected when `KNOWN_OBSERVERS` is blank. |
+| `OBSERVER_TOP_COUNT` | `10` | Maximum activity-ranked default observers, including initial-region and selected-region Default Set. Nearby location selection has a separate fixed maximum of 10. |
 | `OBSERVER_HASH_DISPLAY_BYTES` | `1` | UI hash prefix width: `1` = `AB`, `2` = `ABCD`, `3` = `ABCDEF`. |
 | `OBSERVER_ACTIVE_WINDOW_SECONDS` | `900` | Active observer fallback window when no ranking history exists. |
 | `OBSERVER_RETENTION_SECONDS` | `0` | Age cutoff for dashboard/map observers. Set `0` to disable pruning. |
 | `OBSERVER_ACTIVITY_RETENTION_DAYS` | `30` | Durable observer activity history window. |
 | `MAX_OBSERVER_ENTRIES` | `10000` | Maximum runtime/profile observer entries before oldest unpinned entries are evicted. |
-| `MAX_WS_CONNECTIONS` | `512` | Maximum simultaneous WebSocket clients. |
-| `MAX_WS_CONNECTIONS_PER_IP` | `128` | Maximum simultaneous WebSocket clients per trusted client IP; excess connections alone are rejected. |
-| `MAX_WS_MESSAGE_BYTES` | `1048576` | Maximum inbound WebSocket frame/message payload; an oversized sender alone is closed. |
-| `MAX_WS_BUFFERED_BYTES` | `1048576` | Disconnect slow WebSocket clients above this queued-byte threshold. |
-| `WS_CONNECTION_RATE_WINDOW_SECONDS` | `60` | Per-IP WebSocket connection-attempt rate window. |
-| `WS_CONNECTION_RATE_MAX` | `6000` | Connection attempts allowed per IP and rate window. |
-| `WS_MESSAGE_RATE_WINDOW_SECONDS` | `60` | Per-IP inbound WebSocket message rate window. |
-| `WS_MESSAGE_RATE_MAX` | `12000` | Inbound messages allowed per IP and rate window. Client frames remain non-mutating and are ignored. |
-| `WS_ORIGIN_CHECK_ENABLED` | `true` | Check browser-supplied WebSocket origins against the request host, `SITE_URL`, and `WS_ALLOWED_ORIGINS`. |
-| `WS_ALLOW_MISSING_ORIGIN` | `true` | Allow legacy non-browser clients that omit the `Origin` header. |
-| `WS_ALLOWED_ORIGINS` | blank | Optional comma-separated additional HTTP(S) origins; `*` allows any supplied origin. |
-| `WS_HEARTBEAT_INTERVAL_MS` | `30000` | WebSocket heartbeat and dead-client cleanup interval. |
+| `WEBSOCKET_PATH` | `/` | Exact upgrade path; query strings and alternate paths are rejected. Advertised to the browser in bootstrap. |
+| `WEBSOCKET_ALLOWED_ORIGINS` | blank | Additional HTTP(S) origins. `SITE_URL` is included. With no configured origins, require the request origin. Missing origins and `*` are rejected. |
+| `WEBSOCKET_TOKEN_COOKIE_NAME` | `<TURNSTILE_COOKIE_NAME>_ws` | HttpOnly, Strict cookie issued by an authorized bootstrap or app response. |
+| `WEBSOCKET_TOKEN_TTL_SECONDS` | `60` | Address-bound token lifetime, clamped to 10..300 seconds. |
+| `WEBSOCKET_GLOBAL_CAP` | `200` | Simultaneous accepted/reserved connections. |
+| `WEBSOCKET_PER_IP_CAP` | `5` | Simultaneous connections per trusted client address, bounded by the global cap. |
+| `WEBSOCKET_MAX_PAYLOAD_BYTES` | `16384` | Inbound payload cap, minimum 1024 bytes. All client messages close the connection as read-only. |
+| `WEBSOCKET_MAX_BUFFERED_AMOUNT_BYTES` | `1048576` | Pending bytes including the next send before a slow client is disconnected. |
+| `WEBSOCKET_HEARTBEAT_INTERVAL_SECONDS` | `30` | Ping cadence, minimum 5 seconds. |
+| `WEBSOCKET_IDLE_TIMEOUT_SECONDS` | `90` | Pong deadline, at least twice the ping cadence. |
+| `RATE_LIMIT_BUCKET_MAX` | `10000` | Bound on shared HTTP/upgrade rate buckets, minimum 100. |
+| `WS_CONNECTION_RATE_WINDOW_SECONDS` | `60` | Authorized upgrade-attempt window per address. |
+| `WS_CONNECTION_RATE_MAX` | `6000` | Authorized upgrade attempts per address per window. |
+
+The legacy `MAX_WS_CONNECTIONS`, `MAX_WS_CONNECTIONS_PER_IP`,
+`MAX_WS_MESSAGE_BYTES` and `MAX_WS_BUFFERED_BYTES` names can lower their matching
+bounds, within the deployed minimums. `MAX_RATE_LIMIT_BUCKETS` similarly bounds
+rate buckets. `WS_ALLOWED_ORIGINS` adds explicit origins, and
+`WS_HEARTBEAT_INTERVAL_MS` supplies the ping interval when the seconds setting is
+absent. `WS_ALLOW_MISSING_ORIGIN`, `WS_ORIGIN_CHECK_ENABLED` and the old inbound
+message-rate settings cannot bypass deployed authentication or read-only policy.
+
+Clients must first obtain a bootstrap cookie from the same trusted client address,
+then connect on the advertised path with an allowed Origin. Turnstile preview-bot
+access only renders page metadata; it does not authorize sessions or WebSockets.
+The retained share page makes no WebSocket connection or session-creation request.
 
 `OBSERVER_HASH_DISPLAY_BYTES` only changes display labels. It does not restrict
 which packets or path-hop sizes the app accepts.
-
-WebSocket limits do not change the endpoint, path, query parameters, or
-handshake credentials. Missing `Origin` remains allowed by default for legacy
-observer devices and scripts, and no User-Agent header is required.
 
 Packet path distances are estimates based on observer coordinates and path-hop
 hashes that can be matched back to known observers. Unknown or ambiguous hops
@@ -118,6 +192,9 @@ only receipt observer coordinates are available.
 | `REGIONS_FILE` | blank | GeoJSON FeatureCollection used to assign observer regions. |
 | `REGION_NAME_PROPERTY` | `name` | Feature property used as the child region label. |
 | `REGION_GROUP_PROPERTY` | `group` | Feature property used as the parent group label. |
+| `ALLOWED_REGION_GROUPS` | blank | Comma-separated exact group labels allowed on this website. Combined with `ALLOWED_REGIONS` using union semantics; both blank means unrestricted. |
+| `ALLOWED_REGIONS` | blank | Comma-separated exact region labels allowed on this website. Applies to custom GeoJSON worldwide, not only states. |
+| `INITIAL_REGION` | blank | One exact region label for initial load/reload. Activity-ranked defaults override `KNOWN_OBSERVERS`; must belong to the allowed scope. |
 
 Bundled examples include:
 
@@ -126,7 +203,10 @@ Bundled examples include:
 - `regions/uk.geojson`
 - `regions/de-bundeslaender.geojson`
 
-Leave `REGIONS_FILE` blank to disable region detection.
+Leave `REGIONS_FILE` blank to disable region detection only when allowed-scope
+and initial-region settings are also blank. Geographic settings require a valid
+boundary file. Property labels are case-sensitive and independent of site title.
+For custom `properties.title` labels, set `REGION_NAME_PROPERTY=title`.
 
 ## Turnstile
 
@@ -138,7 +218,7 @@ Leave `REGIONS_FILE` blank to disable region detection.
 | `TURNSTILE_API_URL` | Cloudflare verify endpoint | Verification API endpoint. |
 | `TURNSTILE_COOKIE_NAME` | `mesh_health_turnstile` | Signed access cookie name. |
 | `TURNSTILE_TOKEN_TTL_SECONDS` | `86400` | Turnstile access lifetime. |
-| `TURNSTILE_BOT_BYPASS` | `true` | Allows known link-preview bots to read public metadata. |
+| `TURNSTILE_BOT_BYPASS` | `false` | Allows known link-preview bots to read public metadata. |
 | `TURNSTILE_BOT_ALLOWLIST` | common social bots | Comma-separated lowercase user-agent fragments. |
 | `TURNSTILE_VERIFY_RATE_WINDOW_SECONDS` | `600` | Rate-limit window for Turnstile verification. |
 | `TURNSTILE_VERIFY_RATE_MAX` | `10` | Max verification attempts per rate-limit window. |
@@ -146,3 +226,61 @@ Leave `REGIONS_FILE` blank to disable region detection.
 
 Turnstile is recommended for public deployments. Private/internal deployments
 can disable it.
+
+## Geographic website scope
+
+`ALLOWED_REGION_GROUPS` and `ALLOWED_REGIONS` are comma-separated, exact,
+case-sensitive labels from `REGIONS_FILE` (using `REGION_GROUP_PROPERTY` and
+`REGION_NAME_PROPERTY`). Both blank means unrestricted. When both are set,
+matching either list is sufficient (union, not intersection).
+
+For example, allow New England and initially select Massachusetts:
+
+```env
+REGIONS_FILE=regions/us-states.geojson
+ALLOWED_REGION_GROUPS=New England
+ALLOWED_REGIONS=
+INITIAL_REGION=Massachusetts
+```
+
+Scope filters the observer directory, region options, configured/dynamic defaults,
+map and nearby candidates, and new custom session targets. Unknown or unlocated
+observers are excluded while scope is enabled. Unknown configured labels or
+missing/unreadable boundaries fail startup clearly. Out-of-scope custom targets
+return HTTP 400 (`observer_outside_geographic_scope`); no default candidates
+returns HTTP 400 (`no_observers_in_geographic_scope`), never an unrestricted
+session. Existing retained results, target sets and scoring are not rewritten.
+MQTT ingestion/subscriptions are unchanged: this is not an IATA whitelist, and
+stored observer metadata is not deleted. Restart the container after editing.
+
+The dashboard exposes region filters under **Change observers**. Score guidance
+names the selected region/group and suggests choosing a region only when usable
+region options are provided; an unconfigured global instance has no regional claim.
+`BROWSER_LOCATION_ENABLED=false` does not disable regional or manual selection.
+
+### Initial region and Default Set
+
+Set `INITIAL_REGION=Massachusetts` with `ALLOWED_REGION_GROUPS=New England`
+and blank `ALLOWED_REGIONS` to start/reload in Massachusetts while keeping all
+New England regions available, including nearby selection. `INITIAL_REGION`
+is one exact GeoJSON region label (blank preserves the
+existing default). Unknown labels, missing boundaries, or defaults outside the
+allowed scope fail startup. No matching defaults never falls back outside that area.
+
+With `INITIAL_REGION` set, initial defaults rank recent activity inside the
+configured region before applying `OBSERVER_TOP_COUNT` (10); if there is no ranked
+history, active observers in that area are used. This takes precedence over fixed
+`KNOWN_OBSERVERS`; fixed keys remain the legacy default only with no initial region.
+With fixed `KNOWN_OBSERVERS` defaults and no `INITIAL_REGION`, **Default Set**
+clears temporary region/group filters and restores the configured keys. For
+activity-ranked sites, it uses recent top observers within the currently selected
+region (active-window fallback when no history) and preserves that region.
+Reload restores the site's initial defaults. Region buttons may select all
+observers there; Default Set narrows them to the applicable default set.
+**All** selects every observer in the allowed website area. On activity-ranked
+sites, Default Set after All ranks across that entire area, not the configured
+initial region. Fixed-default sites instead restore their configured keys.
+No precise device coordinates are stored or sent to the server.
+Location requests a fresh high-accuracy estimate and displays browser-reported
+accuracy in the configured distance unit; GPS accuracy is not guaranteed. The public `/privacy` page
+explains local storage, retained results, verification cookies and map providers.

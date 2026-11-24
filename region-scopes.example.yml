@@ -1,0 +1,7 @@
+# Optional public MeshCore routing-scope recognition; no registry is shipped.
+regions: []
+# Fictional examples only. Replace the list above with your own quoted names:
+# regions:
+#   - "#Fictional-Cloud"
+#   - "Fictional-Moon"
+# Quote names beginning with #; otherwise YAML treats them as comments.

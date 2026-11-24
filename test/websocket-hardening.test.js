@@ -27,7 +27,7 @@ process.env.WS_ALLOWED_ORIGINS = 'https://allowed.example';
 process.env.WS_ALLOW_MISSING_ORIGIN = 'true';
 process.env.MAX_WS_CONNECTIONS = '8';
 process.env.MAX_WS_CONNECTIONS_PER_IP = '3';
-process.env.MAX_WS_MESSAGE_BYTES = '128';
+process.env.WEBSOCKET_MAX_PAYLOAD_BYTES = '1024';
 process.env.WS_CONNECTION_RATE_MAX = '10';
 process.env.WS_MESSAGE_RATE_MAX = '2';
 
@@ -37,7 +37,14 @@ const { flushScheduledWrites, server } = await import(
 
 let wsUrl = '';
 
-function openSocket(options = {}, url = wsUrl) {
+async function socketOptions(options) {
+  const response = await fetch(wsUrl.replace(/^ws:/, 'http:') + '/api/bootstrap', { headers: options.headers });
+  const cookie = response.headers.getSetCookie().map(value => value.split(';')[0]).join('; ');
+  return { origin: 'https://allowed.example', ...options, headers: { cookie, ...options.headers } };
+}
+
+async function openSocket(options = {}, url = wsUrl) {
+  options = await socketOptions(options);
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(url, options);
     socket.once('open', () => resolve(socket));
@@ -45,9 +52,10 @@ function openSocket(options = {}, url = wsUrl) {
   });
 }
 
-function rejectedStatus(options = {}) {
+async function rejectedStatus(options = {}, url = wsUrl) {
+  options = await socketOptions(options);
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(wsUrl, options);
+    const socket = new WebSocket(url, options);
     socket.once('unexpected-response', (_request, response) => {
       response.resume();
       resolve(response.statusCode);
@@ -81,25 +89,20 @@ after(async () => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
-test('headerless legacy WebSocket clients connect while disallowed browser origins are rejected', async () => {
-  const legacySocket = await openSocket(
-    {},
-    `${wsUrl}/legacy-observer?station=existing-config`,
-  );
-  await closeSocket(legacySocket);
-
-  const allowedSocket = await openSocket({ origin: 'https://allowed.example' });
-  await closeSocket(allowedSocket);
-
-  assert.equal(
-    await rejectedStatus({ origin: 'https://disallowed.example' }),
-    403,
-  );
+test('deployed admission requires exact path, origin and address-bound bootstrap token', async () => {
+  assert.equal(await rejectedStatus({}, `${wsUrl}/legacy-observer?station=existing-config`), 404);
+  assert.equal(await rejectedStatus({ origin: '' }), 403);
+  assert.equal(await rejectedStatus({ origin: 'https://disallowed.example' }), 403);
+  assert.equal(await rejectedStatus({ headers: { cookie: '' } }), 401);
+  const options = await socketOptions({});
+  assert.equal(await rejectedStatus({ headers: { ...options.headers, 'x-forwarded-for': '203.0.113.90' } }), 401);
+  const allowed = await openSocket();
+  await closeSocket(allowed);
 });
 
 test('per-IP connection cap rejects only the excess socket', async () => {
   const sockets = await Promise.all([openSocket(), openSocket(), openSocket()]);
-  assert.equal(await rejectedStatus(), 503);
+  assert.equal(await rejectedStatus(), 429);
   assert.equal(sockets.every((socket) => socket.readyState === WebSocket.OPEN), true);
   const otherIpSocket = await openSocket({
     headers: { 'x-forwarded-for': '203.0.113.7' },
@@ -138,7 +141,7 @@ test('inbound frames cannot mutate observer state and message limits isolate the
   const oversizedSocket = await openSocket();
   const oversizedCloseCode = await new Promise((resolve) => {
     oversizedSocket.once('close', resolve);
-    oversizedSocket.send(Buffer.alloc(129));
+    oversizedSocket.send(Buffer.alloc(1025));
   });
   assert.equal(oversizedCloseCode, 1009);
 });

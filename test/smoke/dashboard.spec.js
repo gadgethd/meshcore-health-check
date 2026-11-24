@@ -1,5 +1,652 @@
 import { expect, test } from '@playwright/test';
 
+test('default install hides longer-code controls and generates six hex characters', async ({ page }) => {
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toHaveText(/^MHC-[A-F0-9]{6}$/);
+  await expect(page.locator('#code-length-control')).toBeHidden();
+  await expect(page.getByRole('slider', { name: 'Code length' })).toHaveCount(0);
+});
+
+test('MeshCore scope observations render safely in Details, receipt info and shared results on mobile', async ({page}, testInfo) => {
+  await page.addInitScript(() => { window.WebSocket = class { addEventListener() {} close() {} }; });
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toHaveText(/^MHC-/);
+  const id = await page.evaluate(() => sessionStorage.getItem('mesh-health-check-session-id'));
+  const session = await (await page.request.get('/api/sessions/' + id)).json();
+  await page.locator('#session-details > summary').click();
+  await expect(page.locator('#meshcore-scopes')).toHaveText('No scopes observed');
+  await expect(page.getByText('Recorded per receipt;', { exact: false })).toHaveCount(0);
+  const dangerous = '#Fictional-<img src=x onerror="window.scopeXss=true">';
+  const scopes = [{state:'known', names:[dangerous]}, {state:'unscoped',names:[]}, {state:'ambiguous',names:['#Fictional-A','#Fictional-B']}, {state:'unknown',names:[]}, {state:'disabled',names:[]}, {state:'unavailable',names:[]}];
+  const retained = {...session, status:'active', useCount:1, observedCount:1, receipts:[{
+    observerKey:'1'.repeat(64), observerLabel:'Synthetic scope observer', observerShortKey:'111111', observerHash:'11', firstSeenAt:Date.now(), lastSeenAt:Date.now(), count:6, path:[], meshcoreScopes:scopes,
+  }]};
+  await page.route('**/api/sessions/' + id, route => route.fulfill({json:retained}));
+  await page.reload();
+  await page.locator('#session-details > summary').click();
+  await expect(page.locator('#meshcore-scopes')).toContainText(dangerous);
+  await expect(page.locator('#meshcore-scopes')).not.toContainText('Candidate');
+  await expect(page.locator('.receipt-scope')).not.toContainText('Candidate');
+  await expect(page.locator('#meshcore-scopes')).toContainText('Ambiguous');
+  await expect(page.locator('.receipt-scope')).toContainText('No scopes observed');
+  await expect(page.locator('.receipt-scope')).toContainText('Scoped, unknown');
+  await expect(page.locator('.receipt-scope')).toContainText('Matching disabled');
+  await expect(page.locator('.receipt-scope')).toContainText('Unavailable');
+  expect(await page.evaluate(() => window.scopeXss)).toBeUndefined();
+  await expect(page.locator('.receipt-scope img')).toHaveCount(0);
+  for (const width of [1440,390]) {
+    await page.setViewportSize({width,height:1000});
+    await page.locator('#session-details').screenshot({path:testInfo.outputPath('scope-details-' + width + '.png')});
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  }
+  await page.goto(session.sharePath);
+  await expect(page.getByText('Recorded per receipt;', { exact: false })).toHaveCount(0);
+  await expect(page.locator('#meshcore-scopes')).toContainText(dangerous);
+  await expect(page.locator('.receipt-scope')).toContainText('#Fictional-B');
+  delete retained.receipts[0].meshcoreScopes;
+  await page.reload();
+  await expect(page.locator('#meshcore-scopes')).toHaveText('Not present (legacy receipt)');
+  await expect(page.locator('.receipt-scope')).toContainText('Not present (legacy receipt)');
+});
+
+// These proximity tests use synthetic observer/activity and geolocation fixtures,
+// not live MQTT reception or a physical device location.
+async function openNearbyFixture(page, { mode = 'success', rows, bootstrapOverrides = {} } = {}) {
+  const now = Date.now();
+  const observers = rows || Array.from({ length: 12 }, (_, i) => ({
+    ...mapObserver((i + 1).toString(16).padStart(64, '0'), `Nearby ${i + 1}`, 42, -71, null),
+    lastPacketAt: now - 1000,
+  })).reverse();
+  await page.addInitScript((mode) => {
+    window.WebSocket = class { addEventListener() {} close() {} };
+    window.geoCalls = 0;
+    Object.defineProperty(navigator, 'geolocation', { value: mode === 'unavailable' ? undefined : {
+      clearWatch() { window.geoCleared = (window.geoCleared || 0) + 1; },
+      watchPosition(success, failure, options) {
+        window.geoOptions = options;
+        window.geoCalls++;
+        if (mode === 'denied') failure({ code: 1 });
+        else if (mode === 'timeout') failure({ code: 3 });
+        else if (mode === 'delayed') window.completeGeo = () => success({ coords: { latitude: 42, longitude: -71 } });
+        else if (mode === 'coarse') { window.completeGeo = success; success({ coords: { latitude: 42, longitude: -71, accuracy: 50000 } }); }
+        else success({ coords: { latitude: 42, longitude: -71, accuracy: 25 } });
+        return 7;
+      },
+    } });
+    if (mode === 'insecure') Object.defineProperty(window, 'isSecureContext', { value: false });
+  }, mode);
+  const bootstrap = mapBootstrap(observers, '');
+  await page.route('**/api/bootstrap', (route) => route.fulfill({ json: {
+    ...bootstrap, ...bootstrapOverrides,
+    observerStats: { ...bootstrap.observerStats, ...bootstrapOverrides.observerStats },
+  } }));
+  let session;
+  await page.route('**/api/sessions', (route) => {
+    const keys = route.request().postDataJSON().expectedObserverKeys;
+    session = { ...mapSession(keys.length ? observers.filter((o) => keys.includes(o.key)) : observers), status: 'waiting' };
+    return route.fulfill({ json: session });
+  });
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: session }));
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toContainText('MHC-');
+  await page.locator('#observer-customization > summary').click();
+  return observers;
+}
+
+test('channel guidance stays beside copy code outside collapsed details', async ({ page }) => {
+  await openNearbyFixture(page);
+  const guidance = page.locator('.session-sequence .dock-lede');
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    await expect(page.locator('#session-details')).not.toHaveAttribute('open');
+    await expect(guidance).toBeVisible();
+    await expect(guidance).toContainText('Generate a test code, send it to');
+    await expect(guidance.locator('#hero-channel')).toHaveText('#health-check');
+    await expect(page.locator('#session-details #hero-channel')).toHaveCount(0);
+    const layout = await page.evaluate(() => {
+      const copy = document.querySelector('.session-code-actions').getBoundingClientRect();
+      const guide = document.querySelector('.session-sequence .dock-lede').getBoundingClientRect();
+      return { gap: guide.top - copy.bottom, overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(layout.gap).toBeGreaterThanOrEqual(0);
+    expect(layout.gap).toBeLessThan(60);
+    expect(layout.overflow).toBe(false);
+  }
+});
+
+test('disabled browser location keeps map-center and manual choices without geolocation', async ({ page }) => {
+  await openNearbyFixture(page, { bootstrapOverrides: { observerStats: { browserLocationEnabled: false, windowSeconds: 900 } } });
+  await expect(page.locator('#nearby-location')).toBeHidden();
+  await expect(page.locator('#nearby-approximate')).toBeHidden();
+  await expect(page.locator('.score-selection-note')).toContainText('Use map center');
+  await expect(page.locator('.score-selection-note')).not.toContainText('Use my location');
+  await page.evaluate(() => {
+    document.querySelector('#nearby-location').dispatchEvent(new Event('click'));
+    document.querySelector('#nearby-approximate').dispatchEvent(new Event('click'));
+  });
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  await page.locator('#nearby-center').click();
+  await expect(page.locator('#nearby-status')).toContainText('10 selected');
+  const key = await page.locator('#observer-allowlist input:checked').first().inputValue();
+  await page.locator(`#observer-allowlist input[value="${key}"]`).uncheck();
+  await expect(page.locator('#observer-allowlist input:checked')).toHaveCount(9);
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+});
+
+test('score guidance follows available regions and selected group or region', async ({ page }) => {
+  const rows = [mapObserver('1'.repeat(64), 'One', 42, -71, 'Alpha'), mapObserver('2'.repeat(64), 'Two', 42, -71, 'Beta')];
+  rows[0].regionGroup = 'North';
+  rows[1].regionGroup = 'South';
+  await openNearbyFixture(page, { rows, bootstrapOverrides: {
+    regionHierarchy: [{ group: 'North', regions: [{ name: 'Alpha' }] }, { group: 'South', regions: [{ name: 'Beta' }] }],
+  } });
+  const note = page.locator('.score-selection-note');
+  await expect(note).toContainText('You can also choose a region under Change observers to narrow the default set.');
+  await expect(note).toContainText('across all available regions');
+  await page.getByRole('button', { name: 'North', exact: true }).click();
+  await expect(note).toContainText('in the selected region group (North)');
+  await page.getByRole('button', { name: 'Alpha', exact: true }).click();
+  await expect(note).toContainText('in the selected region (Alpha)');
+  await page.getByRole('button', { name: 'All regions', exact: true }).click();
+  await expect(note).toContainText('across all available regions');
+});
+
+test('expanded observer controls keep filters spaced and stack at tablet widths', async ({ page }) => {
+  const rows = [mapObserver('1'.repeat(64), 'Long observer name in Massachusetts', 42, -71, 'Massachusetts')];
+  await openNearbyFixture(page, { rows, bootstrapOverrides: {
+    regionHierarchy: [{ group: 'New England', regions: ['Connecticut', 'Maine', 'Massachusetts', 'New Hampshire'].map((name) => ({ name })) }],
+  } });
+  for (const width of [1440, 1024, 978, 820, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    const boxes = await page.evaluate(() => {
+      const rect = (selector) => { const r = document.querySelector(selector).getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right }; };
+      return { filters: rect('#region-filter'), list: rect('#observer-allowlist'), nearby: rect('.nearby-controls'), grid: rect('.observer-customization-grid'), overflow: document.documentElement.scrollWidth > innerWidth };
+    });
+    expect(boxes.list.top - boxes.filters.bottom).toBeGreaterThanOrEqual(12);
+    expect(boxes.nearby.right).toBeLessThanOrEqual(boxes.grid.right + 1);
+    if (width <= 1024) expect(boxes.nearby.top - boxes.list.bottom).toBeGreaterThanOrEqual(20);
+    expect(boxes.overflow).toBe(false);
+  }
+});
+
+test('score guidance on an unconfigured global instance makes no region claim', async ({ page }) => {
+  await openNearbyFixture(page);
+  await expect(page.locator('.score-selection-note')).not.toContainText(/region|selected area/i);
+  await expect(page.locator('#nearby-location')).toBeVisible();
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+});
+
+for (const enabled of [true, false]) {
+  test(`browser location ${enabled} preserves shared historical targets without requests`, async ({ page }) => {
+    const observers = await openNearbyFixture(page, { bootstrapOverrides: { observerStats: { browserLocationEnabled: enabled, windowSeconds: 900 } } });
+    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: {
+      ...mapSession([observers[0]]), useCount: 1, observedCount: 1, healthPercent: 100, healthLabel: 'EXCELLENT',
+    } }));
+    await page.goto('/share/map-session');
+    await expect(page.locator('#health-percent')).toHaveText('100%');
+    await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
+    await expect(page.locator('#nearby-location')).toBeHidden();
+    await expect(page.locator('#nearby-approximate')).toBeHidden();
+    await expect(page.locator('#nearby-location')).toHaveCount(0);
+    expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  });
+
+  test(`browser location ${enabled} guidance fits desktop and mobile`, async ({ page }, testInfo) => {
+    await openNearbyFixture(page, { bootstrapOverrides: { observerStats: { browserLocationEnabled: enabled, windowSeconds: 900 } } });
+    for (const [label, width, height] of [['desktop', 1440, 1000], ['mobile', 390, 844]]) {
+      await page.setViewportSize({ width, height });
+      await expect(page.locator('.score-selection-note')).toContainText(enabled ? 'Use my location' : 'Use map center');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.locator('.score-selection-note').screenshot({ path: testInfo.outputPath(`${label}-score.png`) });
+      await page.locator('.nearby-controls').screenshot({ path: testInfo.outputPath(`${label}-controls.png`) });
+    }
+  });
+}
+
+test('score explains default observer selection and nearby alternatives', async ({ page }) => {
+  await page.goto('/app');
+  const note = page.locator('.health-pocket .score-selection-note');
+  await expect(note).toBeVisible();
+  await expect(note).toContainText('most active MQTT observers');
+  await expect(note).toContainText('not necessarily the best fit for your exact location');
+  await expect(note).toContainText('Change observers');
+  await expect(note).toContainText('Use my location');
+});
+
+test('pending radius preserves last distances and origin and cancels late location', async ({ page }) => {
+  await captureMap(page);
+  await openNearbyFixture(page, { mode: 'delayed' });
+  await page.locator('#nearby-center').click();
+  const results = await page.locator('#nearby-results').textContent();
+  await expect(page.locator('.nearby-origin-dot')).toHaveCount(1);
+  await page.locator('#nearby-radius').selectOption('25');
+  await expect(page.locator('#nearby-results')).toHaveText(results);
+  await expect(page.locator('.nearby-origin-dot')).toHaveCount(1);
+  await expect(page.locator('#nearby-status')).toContainText('not applied');
+  await page.locator('#nearby-location').click();
+  await page.locator('#nearby-radius').selectOption('50');
+  await page.evaluate(() => window.completeGeo());
+  await expect(page.locator('#nearby-status')).toContainText('not applied');
+  await expect(page.locator('#nearby-results')).toHaveText(results);
+  await expect(page.locator('.nearby-origin-dot')).toHaveCount(1);
+  expect(await page.evaluate(() => window.geoCleared)).toBe(1);
+});
+
+test('nearby blue dot appears only on selection and marks the chosen point', async ({ page }) => {
+  await captureMap(page);
+  await openNearbyFixture(page);
+  const dot = page.locator('.nearby-origin-dot');
+  await expect(dot).toHaveCount(0);
+  await page.locator('#nearby-location').click();
+  await expect(dot).toHaveCount(1);
+  const origin = () => page.evaluate(() => {
+    const layers = [];
+    window.testMap.eachLayer((layer) => {
+      if (layer instanceof L.CircleMarker && layer.options.className === 'nearby-origin-dot') {
+        layers.push({ point: layer.getLatLng(), color: layer.options.fillColor });
+      }
+    });
+    return layers;
+  });
+  expect(await origin()).toEqual([{ point: { lat: 42, lng: -71 }, color: '#3b82f6' }]);
+  await page.evaluate(() => window.testMap.setView([42.1, -71.1], 9, { animate: false }));
+  expect((await origin())[0].point).toEqual({ lat: 42, lng: -71 });
+  await page.evaluate(() => document.querySelector('#nearby-center').addEventListener('click', () => {
+    window.clickedCenter = window.testMap.getCenter().wrap();
+  }, { capture: true, once: true }));
+  await page.locator('#nearby-center').click();
+  await expect(dot).toHaveCount(1);
+  expect((await origin())[0].point).toEqual(await page.evaluate(() => window.clickedCenter));
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect(page.locator('#session-code')).toContainText('MHC-');
+  await expect(dot).toHaveCount(0);
+});
+
+test('repeated map-center searches preserve the panned viewport after browser location', async ({ page }) => {
+  await captureMap(page);
+  const rows = [42, 42.2, 42.4].map((lat, i) => ({
+    ...mapObserver(String(i + 1).repeat(64), `Search area ${i}`, lat, -71, null),
+    lastPacketAt: Date.now(),
+  }));
+  await openNearbyFixture(page, { rows });
+  await page.locator('#nearby-radius').selectOption('5');
+  await page.locator('#nearby-location').click();
+  await expect(page.locator('#nearby-results li')).toHaveCount(1);
+  await page.evaluate(() => {
+    const map = window.testMap;
+    map.stop();
+    window.searchFits = [];
+    const fit = map.fitBounds.bind(map);
+    map.fitBounds = (...args) => { window.searchFits.push(args[0]); return fit(...args); };
+    document.querySelector('#nearby-center').addEventListener('click', () => {
+      window.searchView = { center: map.getCenter().wrap(), zoom: map.getZoom() };
+    }, { capture: true });
+  });
+  for (const [lat, label] of [[42.03, 'Search area 0'], [42.18, 'Search area 1'], [42.38, 'Search area 2']]) {
+    await page.evaluate((lat) => window.testMap.setView([lat, -71], 11, { animate: false }), lat);
+    await page.locator('#nearby-center').click();
+    await expect(page.locator('#nearby-results li')).toContainText([label]);
+    // Observe the viewport through the debounced session replacement too.
+    await page.waitForTimeout(700);
+    const result = await page.evaluate(() => {
+      const map = window.testMap;
+      const dots = [];
+      map.eachLayer((layer) => {
+        if (layer.options.className === 'nearby-origin-dot') dots.push(layer.getLatLng());
+      });
+      return { fits: window.searchFits, selected: window.searchView,
+        center: map.getCenter().wrap(), zoom: map.getZoom(), dots, geoCalls: window.geoCalls };
+    });
+    expect(result.fits).toEqual([]);
+    // Leaflet invalidateSize can nudge the center by a few screen pixels.
+    expect(result.center.lat).toBeCloseTo(result.selected.center.lat, 2);
+    expect(result.center.lng).toBeCloseTo(result.selected.center.lng, 2);
+    expect(result.zoom).toBe(result.selected.zoom);
+    expect(result.dots).toEqual([result.selected.center]);
+    expect(result.geoCalls).toBe(1);
+  }
+});
+
+test('location requests high accuracy and displays browser accuracy', async ({ page }) => {
+  await openNearbyFixture(page);
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  expect(await page.evaluate(() => window.geoOptions)).toMatchObject({ enableHighAccuracy: true, maximumAge: 0 });
+  await expect(page.locator('#nearby-status')).toContainText('0.02 mi');
+});
+
+test('coarse location requires explicit acceptance and cleans up watch', async ({ page }) => {
+  await openNearbyFixture(page, { mode: 'coarse' });
+  await page.clock.install();
+  await page.locator('#nearby-location').click();
+  await expect(page.locator('#nearby-results li')).toHaveCount(0);
+  await page.clock.fastForward(12001);
+  await expect(page.locator('#nearby-status')).toContainText('31.1 mi');
+  await expect(page.locator('#nearby-status')).toContainText('selection unchanged');
+  await expect(page.locator('#nearby-results li')).toHaveCount(0);
+  expect(await page.evaluate(() => window.geoCleared)).toBe(1);
+  await page.locator('#nearby-approximate').click();
+  await expect(page.locator('#nearby-results li')).toHaveCount(10);
+  await expect(page.locator('#nearby-approximate')).toBeHidden();
+});
+
+test('improved browser fix completes early without approximate confirmation', async ({ page }) => {
+  await openNearbyFixture(page, { mode: 'coarse' });
+  await page.locator('#nearby-location').click();
+  await page.evaluate(() => window.completeGeo({ coords: { latitude: 42, longitude: -71, accuracy: 25 } }));
+  await expect(page.locator('#nearby-results li')).toHaveCount(10);
+  await expect(page.locator('#nearby-approximate')).toBeHidden();
+  expect(await page.evaluate(() => window.geoCleared)).toBe(1);
+});
+
+for (const unit of ['mi', 'km']) {
+  test(`configured default reload and 5 ${unit} filtering`, async ({ page }) => {
+    const rows = [mapObserver('A'.repeat(64), 'Six km away', 42.054, -71, null)];
+    rows[0].lastPacketAt = Date.now();
+    await openNearbyFixture(page, { rows, bootstrapOverrides: { observerStats: { distanceUnit: unit, nearbyDefaultRadius: 15, windowSeconds: 14400 } } });
+    await expect(page.locator('#nearby-radius')).toHaveValue('15');
+    expect(await page.locator('#nearby-radius option').evaluateAll((options) => options.map((o) => o.value))).toEqual(['5','10','15','20','25','50','75','100','150','200']);
+    await page.locator('#nearby-radius').selectOption('5');
+    await page.locator('#nearby-location').click();
+    await expect(page.locator('#nearby-radius')).toHaveValue('5');
+    await expect(page.locator('#nearby-results li')).toHaveCount(unit === 'mi' ? 1 : 0);
+    await page.reload();
+    await page.locator('#observer-customization > summary').click();
+    await expect(page.locator('#nearby-radius')).toHaveValue('15');
+    expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  });
+}
+
+test('public privacy page and footer work without authentication', async ({ page, request }) => {
+  const response = await request.get('/privacy');
+  expect(response.status()).toBe(200);
+  await page.goto('/app');
+  await page.getByRole('link', { name: 'Privacy', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
+});
+
+test('Default Set ranks within selected state and reload restores MA markers', async ({ page }) => {
+  await captureMap(page);
+  const rows = [mapObserver('A'.repeat(64), 'MA observer', 42, -71, 'Massachusetts'), mapObserver('B'.repeat(64), 'CT top', 41.6, -72.7, 'Connecticut'), mapObserver('C'.repeat(64), 'CT lower', 41.5, -72.8, 'Connecticut')];
+  await openNearbyFixture(page, { rows, bootstrapOverrides: {
+    defaultRegions: ['Massachusetts'], defaultObserverKeys: [rows[0].key], defaultObservers: [rows[0]], defaultObserverSource: 'top-window',
+    topObserverKeysByRegion: { Massachusetts: [rows[0].key], Connecticut: [rows[1].key] },
+  } });
+  await page.getByRole('button', { name: /^Connecticut/ }).click();
+  await page.getByRole('button', { name: 'Default Set', exact: true }).click();
+  await expect.poll(async () => (await mappedState(page)).markers.map((m) => /CT top/.test(m.popup))).toEqual([true]);
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect.poll(async () => (await mappedState(page)).markers.map((m) => /MA observer/.test(m.popup))).toEqual([true]);
+});
+
+test('All selects the allowed scope, Default Set ranks that scope, reload restores MA', async ({ page }) => {
+  const targets = [];
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/sessions') && request.method() === 'POST') {
+      targets.push(request.postDataJSON().expectedObserverKeys);
+    }
+  });
+  await captureMap(page);
+  const rows = [
+    mapObserver('A'.repeat(64), 'MA observer', 42, -71, 'Massachusetts'),
+    mapObserver('B'.repeat(64), 'CT top', 41.6, -72.7, 'Connecticut'),
+    mapObserver('C'.repeat(64), 'ME observer', 44.3, -69.8, 'Maine'),
+    mapObserver('D'.repeat(64), 'NH observer', 43.2, -71.5, 'New Hampshire'),
+  ];
+  await openNearbyFixture(page, { rows, bootstrapOverrides: {
+    defaultRegions: ['Massachusetts'], defaultObserverKeys: [rows[0].key], defaultObservers: [rows[0]],
+    defaultObserverSource: 'top-window', topObserverKeys: [rows[1].key],
+    topObserverKeysByRegion: { Massachusetts: [rows[0].key] },
+  } });
+  await expect.poll(async () => (await mappedState(page)).markers.map((m) => /MA observer/.test(m.popup))).toEqual([true]);
+  await page.getByRole('button', { name: /^All(?: regions)?\s/ }).click();
+  await expect(page.locator('#observer-allowlist input:checked')).toHaveCount(4);
+  await expect.poll(async () => (await mappedState(page)).markers.length).toBe(4);
+  await expect.poll(async () => {
+    const all = await mappedState(page);
+    return rows.every((row) => all.markers.some((m) => m.popup.includes(row.name) && m.visible));
+  }).toBe(true);
+  await page.getByRole('button', { name: 'Default Set', exact: true }).click();
+  await expect.poll(async () => (await mappedState(page)).markers.map((m) => /CT top/.test(m.popup))).toEqual([true]);
+  await expect.poll(() => targets.at(-1)).toEqual([rows[1].key]);
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect.poll(async () => (await mappedState(page)).markers.map((m) => /MA observer/.test(m.popup))).toEqual([true]);
+});
+
+test('Default Set restores configured eastern observers after regional and All selections', async ({ page }) => {
+  const targets = [];
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/sessions') && request.method() === 'POST') targets.push(request.postDataJSON().expectedObserverKeys);
+  });
+  await captureMap(page);
+  const rows = [
+    mapObserver('A'.repeat(64), 'Eastern configured observer', 42.3, -71.1, 'Massachusetts'),
+    mapObserver('B'.repeat(64), 'Western ranked observer', 42.3, -72.6, 'Massachusetts'),
+    mapObserver('C'.repeat(64), 'CT ranked observer', 41.6, -72.7, 'Connecticut'),
+  ];
+  await openNearbyFixture(page, { rows, bootstrapOverrides: {
+    defaultRegions: [], defaultObserverSource: 'configured', defaultObserverKeys: [rows[0].key], defaultObservers: [rows[0]],
+    topObserverKeys: [rows[1].key], topObserverKeysByRegion: { Massachusetts: [rows[1].key], Connecticut: [rows[2].key] },
+  } });
+  for (const selection of [/^Massachusetts/, /^All(?: regions)?\s/]) {
+    await page.getByRole('button', { name: selection }).click();
+    await expect.poll(async () => (await mappedState(page)).markers.length).toBeGreaterThan(1);
+    await page.getByRole('button', { name: 'Default Set', exact: true }).click();
+    await expect.poll(async () => (await mappedState(page)).markers.map((m) => m.popup.includes(rows[0].name))).toEqual([true]);
+    await expect.poll(() => targets.at(-1)).toEqual([rows[0].key]);
+    expect(await page.locator('#observer-allowlist input:checked').evaluateAll((els) => els.map((el) => el.value))).toEqual([rows[0].key]);
+  }
+});
+
+async function captureMap(page) {
+  await page.route('**/vendor/leaflet/leaflet.js', async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `${await response.text()}\nconst originalMap = L.map; L.map = (...args) => (window.testMap = originalMap(...args));` });
+  });
+}
+
+async function mappedState(page) {
+  await page.waitForFunction(() => window.testMap);
+  return page.evaluate(() => {
+    const markers = [];
+    window.testMap.eachLayer((layer) => {
+      if (layer instanceof L.Marker) markers.push({ popup: layer.getPopup().getContent(), visible: window.testMap.getBounds().contains(layer.getLatLng()) });
+    });
+    return { markers, center: window.testMap.getCenter(), zoom: window.testMap.getZoom() };
+  });
+}
+
+for (const used of [false, true]) {
+  test(`map follows nearby then region and default reload with ${used ? 'used' : 'unused'} session`, async ({ page }) => {
+    await captureMap(page);
+    const rows = Array.from({ length: 7 }, (_, i) => ({
+      ...mapObserver((i + 1).toString(16).padStart(64, '0'), `Transition ${i}`, i < 5 ? 42 + i / 100 : 48 + i / 100, i < 5 ? -71 : 2, i < 5 ? 'BOS' : 'CDG'),
+      lastPacketAt: Date.now(),
+    }));
+    await openNearbyFixture(page, { rows });
+    await page.getByRole('button', { name: 'Use my location' }).click();
+    await expect(page.locator('#nearby-results li')).toHaveCount(5);
+    await page.waitForTimeout(500);
+    expect((await mappedState(page)).markers).toHaveLength(5);
+    if (used) {
+      const historical = { ...mapSession(rows.slice(0, 5)), status: 'active', useCount: 1 };
+      await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: historical }));
+      await page.reload();
+      await page.locator('#observer-customization > summary').click();
+      await expect(page.locator('#observed-count')).toHaveText('0 / 5');
+      await expect.poll(async () => (await mappedState(page)).markers.length).toBe(7);
+    }
+    await page.getByRole('button', { name: /^CDG/ }).click();
+    await expect.poll(async () => (await mappedState(page)).markers.length).toBe(2);
+    const region = await mappedState(page);
+    expect(region.markers.every((m) => /Transition [56]/.test(m.popup) && m.visible)).toBe(true);
+    expect(region.center.lng).toBeGreaterThan(0);
+    await page.reload();
+    await page.locator('#observer-customization > summary').click();
+    await expect.poll(async () => (await mappedState(page)).markers.length).toBe(7);
+    const defaults = await mappedState(page);
+    expect(defaults.markers.every((m) => m.visible)).toBe(true);
+    expect(defaults.zoom).toBeLessThan(region.zoom);
+    expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  });
+}
+
+test('used code keeps its targets and measured score until a new code uses the selection', async ({ page }) => {
+  const rows = await openNearbyFixture(page);
+  const used = { ...mapSession([rows[0]]), useCount: 1, status: 'active', healthPercent: 100, healthLabel: 'VERY HEALTHY', observedCount: 1 };
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: used }));
+  const posts = [];
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/sessions') && request.method() === 'POST') posts.push(request.postDataJSON());
+  });
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect(page.locator('#health-label')).toHaveText('VERY HEALTHY');
+  await expect(page.locator('#health-percent')).toHaveText('100%');
+  await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
+  await expect(page.locator('#expected-observers')).toContainText(rows[0].label);
+  await expect(page.locator('#next-code-note')).toContainText('12 observers');
+  expect(posts).toHaveLength(0);
+  await page.getByRole('button', { name: 'Generate new code to use selection', exact: true }).click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toEqual({ expectedObserverKeys: rows.map((row) => row.key) });
+  await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(12);
+  await expect(page.locator('#next-code-note')).toBeHidden();
+});
+
+test('reload resets nearby and stale storage to website defaults', async ({ page }) => {
+  const rows = await openNearbyFixture(page);
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(page.locator('#nearby-results li')).toHaveCount(10);
+  await page.waitForTimeout(400);
+  await page.evaluate((key) => {
+    localStorage.setItem('mesh-health-check-observer-allowlist', JSON.stringify([key]));
+    sessionStorage.setItem('mesh-health-check-observer-allowlist', JSON.stringify([key]));
+  }, rows[0].key);
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect(page.locator('#observer-allowlist-note')).toContainText('Default:');
+  await expect(page.locator('#observer-allowlist input:checked')).toHaveCount(rows.length);
+  await expect(page.locator('#nearby-results li')).toHaveCount(0);
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  await expect(page.locator('#observed-count')).toContainText(String(rows.length));
+});
+
+test('reload preserves a used session without restoring its custom selection', async ({ page }) => {
+  const rows = await openNearbyFixture(page);
+  const used = { ...mapSession([rows[0]]), useCount: 1, status: 'active' };
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: used }));
+  let posts = 0;
+  page.on('request', (request) => {
+    if (request.url().endsWith('/api/sessions') && request.method() === 'POST') posts++;
+  });
+  await page.reload();
+  await page.locator('#observer-customization > summary').click();
+  await expect(page.locator('#observer-allowlist-note')).toContainText('Default:');
+  await expect(page.locator('#observer-allowlist input:checked')).toHaveCount(rows.length);
+  await expect(page.locator('#session-code')).toHaveText(used.code);
+  await expect(page.locator('#observed-count')).toHaveText('0 / 1');
+  expect(posts).toBe(0);
+  expect(await page.evaluate(() => JSON.parse(sessionStorage.getItem('mesh-health-check-session-history')))).toContain(used.id);
+});
+
+for (const unit of ['mi', 'km']) {
+  test(`nearby uses configured ${unit} for radius and distances`, async ({ page }) => {
+    await openNearbyFixture(page);
+    await page.route('**/api/bootstrap', (route) => {
+      const data = mapBootstrap([{ ...mapObserver(MAP_TEST_KEYS.target, 'Offset', 42.5, -71, null), lastPacketAt: Date.now() }], '');
+      data.observerStats.distanceUnit = unit;
+      return route.fulfill({ json: data });
+    });
+    await page.reload();
+    await page.locator('#observer-customization > summary').click();
+    await expect(page.locator('#nearby-radius option:checked')).toHaveText(`100 ${unit}`);
+    await page.locator('#nearby-radius').selectOption('50');
+    await page.getByRole('button', { name: 'Use my location' }).click();
+    if (unit === 'mi') {
+      await expect(page.locator('#nearby-results li')).toContainText('34.5 mi');
+    } else {
+      await expect(page.locator('#nearby-status')).toContainText('No active observers');
+    }
+  });
+}
+
+test('nearby copy is sentence case and mobile controls fit', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await openNearbyFixture(page);
+  expect(await page.locator('#nearby-status').evaluate((el) => getComputedStyle(el).textTransform)).toBe('none');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+});
+
+test('nearby opt-in selects deterministic top ten, distances and keys-only session payload', async ({ page }) => {
+  const rows = await openNearbyFixture(page);
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  const posted = page.waitForRequest((r) => r.url().endsWith('/api/sessions') && r.method() === 'POST');
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(page.locator('#nearby-status')).toContainText('10 selected');
+  await expect(page.locator('#nearby-results li')).toHaveCount(10);
+  await expect(page.locator('#nearby-results li').first()).toContainText('Nearby 1');
+  await expect(page.locator('#nearby-results li').first()).toContainText('0.0 mi');
+  const payload = (await posted).postDataJSON();
+  expect(Object.keys(payload)).toEqual(['expectedObserverKeys']);
+  expect(payload.expectedObserverKeys).toEqual(rows.map((o) => o.key).sort().slice(0, 10));
+  expect(await page.evaluate(() => JSON.stringify({ ...sessionStorage, ...localStorage }))).not.toContain('latitude');
+  const selectedKey = await page.locator('#observer-allowlist input:checked').first().getAttribute('value');
+  await page.locator(`#observer-allowlist input[value="${selectedKey}"]`).uncheck();
+  await expect(page.locator('#nearby-results li')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Default Set', exact: true }).click();
+  await expect(page.locator('#observer-allowlist-note')).toContainText('Default:');
+});
+
+for (const mode of ['denied', 'unavailable', 'insecure', 'timeout']) {
+  test(`nearby ${mode} location falls back explicitly to map center`, async ({ page }) => {
+    await openNearbyFixture(page, { mode });
+    await page.getByRole('button', { name: 'Use my location' }).click();
+    await expect(page.locator('#nearby-status')).toContainText('Location');
+    await expect(page.locator('#nearby-status')).toContainText('map center');
+    await expect(page.locator('#nearby-status')).toContainText('10 selected');
+    if (mode === 'insecure' || mode === 'unavailable') expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+  });
+}
+
+test('nearby empty and stale activity preserve the previous observer selection', async ({ page }) => {
+  const rows = [
+    { ...mapObserver(MAP_TEST_KEYS.target, 'Stale', 42, -71, null), lastPacketAt: Date.now() - 1000000 },
+    { ...mapObserver(MAP_TEST_KEYS.outside, 'Unknown', 42, -71, null) },
+    { ...mapObserver(MAP_TEST_KEYS.zero, 'Bad coordinates', null, -71, null), lastPacketAt: Date.now() },
+  ];
+  await openNearbyFixture(page, { rows });
+  const before = await page.locator('#observer-allowlist input:checked').evaluateAll((els) => els.map((el) => el.value));
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  await expect(page.locator('#nearby-status')).toContainText('No active observers');
+  await expect(page.locator('#nearby-status')).toContainText('unchanged');
+  expect(await page.locator('#observer-allowlist input:checked').evaluateAll((els) => els.map((el) => el.value))).toEqual(before);
+});
+
+test('nearby radius is explicit and map-center selection needs no location permission', async ({ page }) => {
+  await openNearbyFixture(page);
+  await expect(page.locator('#nearby-radius')).toHaveValue('100');
+  await page.locator('#nearby-radius').selectOption('25');
+  await page.getByRole('button', { name: 'Use map center', exact: true }).click();
+  await expect(page.locator('#nearby-status')).toContainText('25 mi');
+  await expect(page.locator('#nearby-status')).toContainText('10 selected');
+  expect(await page.evaluate(() => window.geoCalls)).toBe(0);
+});
+
+test('late geolocation cannot overwrite a newer manual choice', async ({ page }) => {
+  await openNearbyFixture(page, { mode: 'delayed' });
+  await page.getByRole('button', { name: 'Use my location' }).click();
+  const selectedKey = await page.locator('#observer-allowlist input:checked').first().getAttribute('value');
+  await page.locator(`#observer-allowlist input[value="${selectedKey}"]`).uncheck();
+  const before = await page.locator('#observer-allowlist input:checked').count();
+  await page.evaluate(() => window.completeGeo());
+  expect(await page.locator('#observer-allowlist input:checked').count()).toBe(before);
+  await expect(page.locator('#nearby-results li')).toHaveCount(0);
+});
+
+
 const MAP_TEST_KEYS = {
   target: '1111111111111111111111111111111111111111111111111111111111111111',
   outside: '2222222222222222222222222222222222222222222222222222222222222222',
@@ -24,18 +671,22 @@ function mapObserver(key, label, lat, lon, region) {
   };
 }
 
-function mapBootstrap(observerDirectory) {
+function mapBootstrap(observerDirectory, cartoBasemapKey = 'test-carto-key') {
   return {
     site: {
       title: 'MeshCore Observer Coverage',
       eyebrow: 'MeshCore Observer Coverage',
       headline: 'Check your mesh reach.',
       description: 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.',
-      version: '1.3.8',
+      version: '1.4.2',
       repoUrl: 'https://github.com/yellowcooln/meshcore-health-check',
       changesUrl: 'https://github.com/yellowcooln/meshcore-health-check/blob/main/CHANGES.md',
     },
     mqtt: { connected: false, broker: 'mqtt.example.test', topics: ['meshcore/BOS/#'] },
+    map: {
+      cartoBasemapKey,
+      darkBasemapAvailable: Boolean(cartoBasemapKey),
+    },
     testChannel: { name: 'health-check', hash: '99' },
     turnstile: { enabled: false, verified: true },
     defaultObserverSource: 'configured',
@@ -87,7 +738,12 @@ function mapSession(expectedObservers) {
   };
 }
 
-async function openMockMapSession(page, observerDirectory, expectedObservers) {
+async function openMockMapSession(
+  page,
+  observerDirectory,
+  expectedObservers,
+  cartoBasemapKey = 'test-carto-key',
+) {
   await page.addInitScript(() => {
     window.WebSocket = class {
       addEventListener() {}
@@ -96,7 +752,7 @@ async function openMockMapSession(page, observerDirectory, expectedObservers) {
   });
   await page.route('**/api/bootstrap', (route) => route.fulfill({
     contentType: 'application/json',
-    body: JSON.stringify(mapBootstrap(observerDirectory)),
+    body: JSON.stringify(mapBootstrap(observerDirectory, cartoBasemapKey)),
   }));
   await page.route('**/api/sessions*', (route) => {
     if (route.request().method() === 'GET') {
@@ -114,6 +770,81 @@ async function openMockMapSession(page, observerDirectory, expectedObservers) {
   });
   await page.goto('/share/map-session');
 }
+
+for (const [name, evidence, scored] of [
+  ['unmatched expired', { status: 'expired' }, false],
+  ['matched hash', { messageHash: 'ABCDEF' }, true],
+  ['historical match time', { matchedAt: Date.now() }, true],
+  ['recorded use', { useCount: 1 }, true],
+  ['historical receipts', { receipts: [{ observerKey: MAP_TEST_KEYS.target, firstSeenAt: Date.now(), lastSeenAt: Date.now(), path: [] }] }, true],
+]) {
+  test(`shared ${name} keeps the appropriate score and historical targets`, async ({ page }) => {
+    const target = mapObserver(MAP_TEST_KEYS.target, 'Historical target', 42, -71, 'BOS');
+    const other = mapObserver(MAP_TEST_KEYS.outside, 'Other observer', 48, 2, 'CDG');
+    await openMockMapSession(page, [target, other], [target]);
+    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: { ...mapSession([target]), ...evidence } }));
+    await page.reload();
+    await expect(page.locator('#health-label')).toHaveText(scored ? 'POOR' : 'Awaiting message');
+    await expect(page.locator('#health-percent')).toHaveText(scored ? '0%' : '--');
+    await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
+    await expect(page.locator('#expected-observers')).toContainText('Historical target');
+    await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+  });
+}
+
+test('signal quality distinguishes waiting from unavailable data and reported readings', async ({ page }) => {
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Signal observer', 42, -71, 'BOS');
+  await openMockMapSession(page, [target], [target]);
+  await expect(page.locator('#signal-quality')).toHaveText('--');
+  await expect(page.locator('#signal-quality-label')).toHaveText('Awaiting telemetry.');
+
+  const receipt = { observerKey: target.key, firstSeenAt: Date.now(), lastSeenAt: Date.now(), path: [], rssi: null, snr: null };
+  for (const evidence of [
+    { messageHash: 'ABCDEF' },
+    { matchedAt: Date.now() },
+    { useCount: 1 },
+    { observedCount: 1, receipts: [receipt] },
+  ]) {
+    await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: { ...mapSession([target]), ...evidence } }));
+    await page.reload();
+    await expect(page.locator('#signal-quality')).toHaveText('--');
+    await expect(page.locator('#signal-quality-label')).toHaveText('Signal data unavailable.');
+  }
+
+  await page.route('**/api/sessions/map-session', (route) => route.fulfill({ json: {
+    ...mapSession([target]), matchedAt: Date.now(), receipts: [{ ...receipt, rssi: -90, snr: 0 }],
+  } }));
+  await page.reload();
+  await expect(page.locator('#signal-quality')).toHaveText(/\d+%/);
+  await expect(page.locator('#signal-quality-label')).not.toHaveText(/Awaiting|unavailable/);
+});
+
+test('primary code comes before collapsed customization and diagnostics', async ({ page }) => {
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toContainText('MHC-');
+  await expect(page.getByRole('button', { name: 'Copy code', exact: true })).toBeVisible();
+  await expect(page.locator('#observer-customization')).not.toHaveAttribute('open', '');
+  await expect(page.locator('#observer-selection-summary')).toContainText(/Default: \d+ observers?/);
+  await expect(page.locator('#nearby-location')).toBeHidden();
+  await expect(page.locator('#observer-map')).toBeVisible();
+  await expect(page.locator('#broker-name')).toBeHidden();
+  await expect(page.getByText('Live Surface', { exact: true })).toHaveCount(0);
+  await page.locator('#observer-customization > summary').click();
+  await expect(page.locator('#nearby-location')).toBeVisible();
+  await expect(page.locator('#observer-allowlist input').first()).toBeVisible();
+  await page.getByText('Details', { exact: true }).click();
+  await expect(page.locator('#broker-name')).toBeVisible();
+});
+
+test('fresh checks are unscored in the active result and history', async ({ page }) => {
+  await page.goto('/app');
+  await expect(page.locator('#session-code')).toContainText('MHC-');
+  await expect(page.locator('#health-label')).toHaveText('Awaiting message');
+  await expect(page.locator('#health-label')).not.toHaveClass(/status-poor/);
+  await expect(page.locator('#health-percent')).toHaveText('--');
+  await expect(page.locator('#session-history')).not.toContainText('POOR');
+  await expect(page.locator('#session-history')).not.toContainText('0%');
+});
 
 test('dashboard loads and creates a session code', async ({ page }) => {
   await page.goto('/app');
@@ -171,6 +902,7 @@ test('share button uses the browser share API with the retained share link', asy
 
 test('changing the observer selection updates the target and regenerates the unused code', async ({ page }) => {
   await page.goto('/app');
+  await page.locator('#observer-customization > summary').click();
 
   const sessionCode = page.locator('#session-code');
   await expect(sessionCode).toContainText('MHC-', { timeout: 10000 });
@@ -207,54 +939,154 @@ test('coverage map omits observers with 0,0 coordinates', async ({ page }) => {
   await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
 });
 
-for (const surface of ['app', 'share']) {
-  test(`${surface} map loads same-origin tiles and keeps both themes and attribution`, async ({ page }) => {
-    const violations = [];
-    page.on('console', (message) => {
-      if (message.text().startsWith('map-csp:')) violations.push(message.text());
-    });
-    await page.addInitScript(() => {
-      localStorage.setItem('mesh-health-check-ui-theme', 'dark');
-      document.addEventListener('securitypolicyviolation', (event) => {
-        console.log(`map-csp:${event.violatedDirective}:${event.blockedURI}`);
+test('CARTO tiles send only the origin while the dashboard retains no-referrer', async ({ page }) => {
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
+  const cartoRequests = [];
+  const osmReferrers = [];
+  await page.route('https://*.basemaps.cartocdn.com/**', async (route) => {
+    cartoRequests.push({ url: route.request().url(), referer: await route.request().headerValue('referer') });
+    await route.abort();
+  });
+  await page.route('https://*.tile.openstreetmap.org/**', async (route) => {
+    osmReferrers.push(await route.request().headerValue('referer'));
+    await route.abort();
+  });
+
+  await openMockMapSession(page, [target], [target]);
+  await page.route('**/api/sessions', (route) => route.fulfill({ json: mapSession([target]) }));
+  cartoRequests.length = 0;
+  const response = await page.goto('/app?private=referrer-regression');
+  expect(response.headers()['referrer-policy']).toBe('no-referrer');
+  await expect.poll(() => cartoRequests.length).toBeGreaterThan(0);
+  expect(cartoRequests[0].url).toContain('dark_all');
+  expect(cartoRequests[0].url).toContain('key=test-carto-key');
+  const origin = `${new URL(page.url()).origin}/`;
+  expect(cartoRequests.every((request) => request.referer === origin)).toBe(true);
+  await expect(page.locator('#observer-map canvas.maplibregl-canvas')).toHaveCount(0);
+  await expect(page.locator('#observer-map img.leaflet-tile').first()).toHaveAttribute('referrerpolicy', 'strict-origin');
+
+  await page.locator('#ui-theme-toggle').click();
+  await expect.poll(() => osmReferrers.length).toBeGreaterThan(0);
+  expect(osmReferrers.every((referer) => referer === null)).toBe(true);
+});
+
+test('keyless dark map renders with real MapLibre and releases canvases on theme changes', async ({ page }) => {
+  const target = mapObserver(MAP_TEST_KEYS.target, 'Target Observer', 42.3601, -71.0589, 'BOS');
+  const errors = [];
+  const violations = [];
+  const workers = [];
+  page.on('worker', (worker) => workers.push(worker.url()));
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.addInitScript(() => {
+    window.cspViolations = [];
+    document.addEventListener('securitypolicyviolation', (event) => window.cspViolations.push(event.violatedDirective));
+  });
+  // Only the provider response is deterministic: renderer, bridge, worker and Leaflet are real.
+  await page.route('https://tiles.openfreemap.org/styles/dark', (route) => route.fulfill({ json: {
+    version: 8,
+    sources: { untrusted: { type: 'geojson', data: { type: 'FeatureCollection', features: [] },
+      attribution: '<details open onload="1" ontoggle="window.__attributionXss=true">Untrusted source attribution</details>',
+    } },
+    layers: [
+      { id: 'background', type: 'background', paint: { 'background-color': '#101820' } },
+      { id: 'empty-points', type: 'circle', source: 'untrusted' },
+    ],
+  } }));
+  await captureMap(page);
+  await openMockMapSession(page, [target], [target], '');
+  await expect(page.locator('#observer-map canvas.maplibregl-canvas')).toHaveCount(1);
+  await expect.poll(() => page.evaluate(() => {
+    let loaded = false;
+    window.testMap.eachLayer((layer) => { if (layer.getMaplibreMap) loaded = layer.getMaplibreMap().loaded(); });
+    return loaded;
+  })).toBe(true);
+  expect(workers.length).toBeGreaterThan(0);
+  expect(workers.every((url) => {
+    const worker = new URL(url);
+    return worker.pathname === '/vendor/maplibre/maplibre-gl-worker.mjs' && worker.search === '?v=6.16.0';
+  })).toBe(true);
+  await expect(page.locator('.leaflet-control-attribution')).toContainText('OpenFreeMap');
+  await expect(page.locator('.leaflet-control-attribution')).toContainText('OpenMapTiles');
+  // Keep provider attribution outside the DOM even with the patched renderer.
+  await expect(page.locator('#observer-map .maplibregl-ctrl-attrib, #observer-map details')).toHaveCount(0);
+  await expect(page.locator('.leaflet-control-attribution')).not.toContainText('Untrusted source attribution');
+  expect(await page.evaluate(() => window.__attributionXss)).toBeUndefined();
+  for (let i = 0; i < 2; i += 1) {
+    await page.locator('#ui-theme-toggle').click();
+    await expect(page.locator('#observer-map canvas')).toHaveCount(0);
+    await expect(page.locator('.leaflet-control-attribution')).not.toContainText('OpenFreeMap');
+    await page.locator('#ui-theme-toggle').click();
+    await expect(page.locator('#observer-map canvas')).toHaveCount(1);
+  }
+  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+  await page.locator('#observer-map .leaflet-marker-icon').click();
+  await expect(page.locator('.leaflet-popup')).toContainText(target.label);
+  await page.evaluate(() => { window.testMap.panBy([30, 20], { animate: false }); window.testMap.setZoom(9, { animate: false }); });
+  expect((await mappedState(page)).markers[0].popup).toContain(target.label);
+  violations.push(...await page.evaluate(() => window.cspViolations));
+  expect(violations).toEqual([]);
+  expect(errors).toEqual([]);
+});
+
+for (const failure of ['unsupported WebGL', 'bridge factory', 'renderer construction', 'renderer loading', 'bridge loading', 'provider']) {
+  test(`dark map falls back to OSM after ${failure} failure without losing Leaflet interactions`, async ({ page }) => {
+    const target = mapObserver(MAP_TEST_KEYS.target, 'Fallback Observer', 42.3601, -71.0589, 'BOS');
+    const errors = [];
+    const osmRequests = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    if (failure === 'unsupported WebGL') {
+      await page.addInitScript(() => {
+        const original = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (type, ...args) {
+          return /webgl/.test(type) ? null : original.call(this, type, ...args);
+        };
       });
+    }
+    if (failure === 'renderer loading' || failure === 'bridge loading') {
+      await page.route(failure === 'renderer loading'
+        ? '**/vendor/maplibre/maplibre-gl.mjs' : '**/vendor/maplibre-leaflet/leaflet-maplibre-gl.js', (route) => route.abort());
+    }
+    if (failure === 'renderer construction' || failure === 'bridge factory') {
+      const asset = failure === 'renderer construction'
+        ? '**/map-renderer.js' : '**/vendor/maplibre-leaflet/leaflet-maplibre-gl.js';
+      await page.route(asset, async (route) => {
+        const response = await route.fetch();
+        const injection = failure === 'renderer construction'
+          ? 'window.maplibregl.Map = function () { window.__failureInjected = true; throw new Error("injected renderer failure"); };'
+          : 'L.maplibreGL = function () { window.__failureInjected = true; throw new Error("injected bridge failure"); };';
+        const source = await response.text();
+        const body = failure === 'renderer construction'
+          ? source.replace("await import('/vendor/maplibre-leaflet/leaflet-maplibre-gl.js');", `${injection}\nawait import('/vendor/maplibre-leaflet/leaflet-maplibre-gl.js');`)
+          : `${source}\n${injection}`;
+        await route.fulfill({ response, body });
+      });
+    }
+    await page.route('https://tiles.openfreemap.org/**', (route) => failure === 'provider'
+      ? route.fulfill({ status: 503, body: 'Provider unavailable' })
+      : route.fulfill({ json: { version: 8, sources: {}, layers: [{ id: 'bg', type: 'background', paint: { 'background-color': '#101820' } }] } }));
+    await page.route('https://*.tile.openstreetmap.org/**', (route) => {
+      osmRequests.push(route.request().url());
+      return route.abort();
     });
-    if (surface === 'share') {
-      const observer = mapObserver(MAP_TEST_KEYS.target, 'London Observer', 51.5074, -0.1278, 'UK');
-      await openMockMapSession(page, [observer], [observer]);
-    } else {
-      await page.goto('/app');
+    await captureMap(page);
+    await openMockMapSession(page, [target], [target], '');
+    if (failure === 'renderer construction' || failure === 'bridge factory') {
+      await expect.poll(() => page.evaluate(() => window.__failureInjected)).toBe(true);
     }
-    const map = page.locator('#observer-map');
-    await map.scrollIntoViewIfNeeded();
-    for (const theme of ['dark', 'light']) {
-      const layer = map.locator(`.observer-basemap-${theme}`);
-      await expect(layer).toBeAttached();
-      await expect.poll(() => layer.locator('img.leaflet-tile').evaluateAll((tiles) => (
-        tiles.length > 0 && tiles.every((tile) => tile.complete && tile.naturalWidth === 256)
-      )), { timeout: 20000 }).toBe(true);
-      await expect(layer.locator('img.leaflet-tile').first()).toBeVisible();
-      const urls = await layer.locator('img.leaflet-tile').evaluateAll((tiles) => tiles.map((tile) => tile.src));
-      expect(urls.every((url) => /^http:\/\/127\.0\.0\.1:3091\/tiles\/osm\/\d+\/\d+\/\d+\.png$/.test(url))).toBe(true);
-      const filter = await layer.evaluate((element) => getComputedStyle(element).filter);
-      expect(filter === 'none').toBe(theme === 'light');
-      await expect(map.locator('.leaflet-marker-pane')).toHaveCSS('filter', 'none');
-      await expect(map.getByRole('link', { name: 'OpenStreetMap contributors' })).toHaveAttribute(
-        'href', 'https://www.openstreetmap.org/copyright',
-      );
-      if (theme === 'dark') await page.locator('#ui-theme-toggle').click();
-    }
-    expect(violations).toEqual([]);
+    await expect.poll(() => osmRequests.length).toBeGreaterThan(0);
+    await expect(page.locator('#observer-map canvas')).toHaveCount(0);
+    await expect(page.locator('#observer-map .leaflet-gl-layer')).toHaveCount(0);
+    await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(1);
+    await page.locator('#observer-map .leaflet-marker-icon').click();
+    await expect(page.locator('.leaflet-popup')).toContainText(target.label);
+    await page.evaluate(() => { window.testMap.panBy([20, 10], { animate: false }); window.testMap.setZoom(8, { animate: false }); });
+    await expect(page.locator('.leaflet-control-attribution')).toContainText('OpenStreetMap');
+    await expect(page.locator('.leaflet-control-attribution')).not.toContainText('OpenFreeMap');
+    await expect(page.locator('body')).toHaveAttribute('data-ui-theme', 'dark');
+    await page.waitForTimeout(250);
+    expect(errors).toEqual([]);
   });
 }
-
-test('coverage map stays usable without observer coordinates', async ({ page }) => {
-  await openMockMapSession(page, [], []);
-  await expect(page.locator('#map-observer-note')).toContainText('No observer coordinates yet.');
-  await expect(page.locator('#observer-map .leaflet-marker-icon')).toHaveCount(0);
-  await expect(page.locator('#observer-map .leaflet-control-zoom')).toBeVisible();
-  await expect(page.locator('#observer-map .leaflet-tile-loaded').first()).toBeVisible();
-});
 
 test('escapes untrusted observer labels in timeline and map popups', async ({ page }) => {
   const maliciousLabel = '<img src=x onerror="window.__meshHealthXssHit=true">Evil Observer';

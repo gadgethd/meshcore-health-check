@@ -1,4 +1,5 @@
 node_modules
+region-scopes.yml
 npm-debug.log
 .env
 *.preoverride*

@@ -35,12 +35,12 @@ test('service worker retires the old asset cache during activation', async () =>
   const deleted = [];
   const handlers = workerContext({
     caches: {
-      keys: async () => ['mesh-health-check-pwa-v3', 'mesh-health-check-pwa-v4'],
+      keys: async () => ['mesh-health-check-pwa-v3', 'mesh-health-check-pwa-v4', 'mesh-health-check-pwa-v1.4.3-guided-1'],
       delete: async (name) => deleted.push(name),
     },
   });
   let activation;
   handlers.activate({ waitUntil: (task) => { activation = task; } });
   await activation;
-  assert.deepEqual(deleted, ['mesh-health-check-pwa-v3']);
+  assert.deepEqual(deleted, ['mesh-health-check-pwa-v3', 'mesh-health-check-pwa-v4']);
 });

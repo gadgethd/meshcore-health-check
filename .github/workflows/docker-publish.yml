@@ -29,10 +29,7 @@ on:
 jobs:
   docker:
     if: github.repository == 'yellowcooln/meshcore-health-check'
-    runs-on:
-      - self-hosted
-      - Linux
-      - X64
+    runs-on: ubuntu-latest
 
     permissions:
       contents: read
