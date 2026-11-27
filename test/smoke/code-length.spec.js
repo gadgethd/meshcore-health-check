@@ -18,6 +18,7 @@ for (const used of [false, true]) {
     await expect(slider).toHaveAttribute('max', '16');
     await expect(slider).toHaveAttribute('step', '1');
     await expect(slider).toHaveValue('6');
+    await page.locator('#new-session-button').click();
     await expect(page.locator('#session-code')).toHaveText(/^NYHC1234-[A-F0-9]{6}$/);
     const code = await page.locator('#session-code').textContent();
     const initial = await (await page.request.get('/api/sessions/' + await page.evaluate(() => sessionStorage.getItem('mesh-health-check-session-id')))).json();
@@ -65,14 +66,18 @@ for (const used of [false, true]) {
   });
 }
 
-test('observer changes retain automatic new-code behavior at the chosen length', async ({ page }) => {
+test('observer changes take effect on the next explicit code at the chosen length', async ({ page }) => {
   await page.goto('/app');
+  await page.locator('#new-session-button').click();
   await expect(page.locator('#session-code')).toHaveText(/^NYHC1234-[A-F0-9]{6}$/);
   await page.getByRole('slider', { name: 'Code length' }).fill('7');
   await page.locator('#observer-customization > summary').click();
   const response = page.waitForResponse(r => r.url().endsWith('/api/sessions') && r.request().method() === 'POST');
   const choices = page.locator('#observer-allowlist input[type="checkbox"]');
+  const originalCode = await page.locator('#session-code').textContent();
   await choices.first().uncheck();
+  await expect(page.locator('#session-code')).toHaveText(originalCode);
+  await page.locator('#new-session-button').click();
   const created = await (await response).json();
   await expect(page.locator('#session-code')).toHaveText(/^NYHC1234-[A-F0-9]{7}$/);
   expect(created.expectedObservers).toHaveLength(1);
@@ -111,6 +116,7 @@ test('older bootstrap without code options retains default guidance and code', a
     await route.fulfill({ json: bootstrap });
   });
   await page.goto('/app');
+  await page.locator('#new-session-button').click();
   await expect(page.locator('#session-code')).toHaveText(/^NYHC1234-[A-F0-9]{6}$/);
   await expect(page.locator('#code-length-control')).toBeHidden();
   await expect(page.locator('#code-length-note')).toHaveText('Hex characters after MHC-. Applies to new codes only.');

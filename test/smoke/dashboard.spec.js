@@ -6,8 +6,13 @@ const TILE_RESPONSE = {
   body: '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#101820"/></svg>',
 };
 
-test('default install hides longer-code controls and generates six hex characters', async ({ page }) => {
+async function openCheck(page) {
   await page.goto('/app');
+  await page.locator('#new-session-button').click();
+}
+
+test('default install hides longer-code controls and generates six hex characters', async ({ page }) => {
+  await openCheck(page);
   await expect(page.locator('#session-code')).toHaveText(/^MHC-[A-F0-9]{6}$/);
   await expect(page.locator('#code-length-control')).toBeHidden();
   await expect(page.getByRole('slider', { name: 'Code length' })).toHaveCount(0);
@@ -15,7 +20,7 @@ test('default install hides longer-code controls and generates six hex character
 
 test('MeshCore scope observations render safely in Details, receipt info and shared results on mobile', async ({page}, testInfo) => {
   await page.addInitScript(() => { window.WebSocket = class { addEventListener() {} close() {} }; });
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toHaveText(/^MHC-/);
   const id = await page.evaluate(() => sessionStorage.getItem('mesh-health-check-session-id'));
   const session = await (await page.request.get('/api/sessions/' + id)).json();
@@ -100,7 +105,7 @@ async function openNearbyFixture(page, { mode = 'success', rows, bootstrapOverri
   });
   session = { ...mapSession(observers), status: 'waiting' };
   await mockSessionReads(page, () => session);
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toContainText('MHC-');
   await page.locator('#observer-customization > summary').click();
   return observers;
@@ -217,7 +222,7 @@ for (const enabled of [true, false]) {
 }
 
 test('score explains default observer selection and nearby alternatives', async ({ page }) => {
-  await page.goto('/app');
+  await openCheck(page);
   const note = page.locator('.health-pocket .score-selection-note');
   await expect(note).toBeVisible();
   await expect(note).toContainText('most active MQTT observers');
@@ -373,7 +378,7 @@ for (const unit of ['mi', 'km']) {
 test('public privacy page and footer work without authentication', async ({ page, request }) => {
   const response = await request.get('/privacy');
   expect(response.status()).toBe(200);
-  await page.goto('/app');
+  await openCheck(page);
   await page.getByRole('link', { name: 'Privacy', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
 });
@@ -820,7 +825,7 @@ test('signal quality distinguishes waiting from unavailable data and reported re
 });
 
 test('primary code comes before collapsed customization and diagnostics', async ({ page }) => {
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toContainText('MHC-');
   await expect(page.getByRole('button', { name: 'Copy code', exact: true })).toBeVisible();
   await expect(page.locator('#observer-customization')).not.toHaveAttribute('open', '');
@@ -837,7 +842,7 @@ test('primary code comes before collapsed customization and diagnostics', async 
 });
 
 test('fresh checks are unscored in the active result and history', async ({ page }) => {
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toContainText('MHC-');
   await expect(page.locator('#health-label')).toHaveText('Awaiting message');
   await expect(page.locator('#health-label')).not.toHaveClass(/status-poor/);
@@ -846,12 +851,13 @@ test('fresh checks are unscored in the active result and history', async ({ page
   await expect(page.locator('#session-history')).not.toContainText('0%');
 });
 
-test('dashboard loads and creates a session code', async ({ page }) => {
+test('dashboard waits for the user to generate a code', async ({ page }) => {
   await page.goto('/app');
 
   await expect(page).toHaveTitle(/MeshCore Observer Coverage/i);
   await expect(page.getByText('MeshCore Observer Coverage')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'New Code' })).toBeVisible();
+  await expect(page.locator('#session-code')).toHaveText('No active code');
+  await page.getByRole('button', { name: 'Generate code', exact: true }).click();
   await expect(page.getByRole('link', { name: 'gadgethd/meshcore-health-check' })).toBeVisible();
   await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
   await expect(page.getByRole('button', { name: 'Copy' })).toBeVisible();
@@ -888,7 +894,7 @@ test('share button uses the browser share API with the retained share link', asy
     };
   });
 
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toContainText('MHC-', { timeout: 10000 });
 
   await page.getByRole('button', { name: 'Share' }).click();
@@ -900,8 +906,8 @@ test('share button uses the browser share API with the retained share link', asy
   expect(shareCalls[0].url).toMatch(/^http:\/\/127\.0\.0\.1:3091\/share\/[0-9a-f-]+$/i);
 });
 
-test('changing the observer selection updates the target and regenerates the unused code', async ({ page }) => {
-  await page.goto('/app');
+test('changing observers preserves the current code until a new one is requested', async ({ page }) => {
+  await openCheck(page);
   await page.locator('#observer-customization > summary').click();
 
   const sessionCode = page.locator('#session-code');
@@ -913,6 +919,8 @@ test('changing the observer selection updates the target and regenerates the unu
   const initialObserverCount = await observerOptions.count();
   expect(initialObserverCount).toBeGreaterThan(1);
   await observerOptions.nth(0).uncheck();
+  await expect(sessionCode).toHaveText(initialCode || '');
+  await page.locator('#new-session-button').click();
 
   await expect(page.locator('#expected-observers .observer-pill')).toHaveCount(1);
   await expect(sessionCode).not.toHaveText(initialCode || '', { timeout: 10000 });
@@ -1236,7 +1244,7 @@ test('escapes untrusted observer labels in timeline and map popups', async ({ pa
   });
 
   await mockSessionReads(page, session);
-  await page.goto('/app');
+  await openCheck(page);
   await expect(page.locator('#session-code')).toHaveText('MHC-XSS123');
   await expect(page.locator('#session-hash')).toHaveAttribute(
     'href',

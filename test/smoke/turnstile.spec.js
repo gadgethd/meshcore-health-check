@@ -28,7 +28,7 @@ test('successful Turnstile verification sets the auth cookie and opens the dashb
   await page.evaluate(() => window.__turnstileOptions.callback('success-token'));
 
   await expect(page).toHaveURL(/\/app$/, { timeout: 10000 });
-  await expect(page.getByRole('button', { name: 'New Code' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Generate code', exact: true })).toBeVisible();
 
   const cookie = (await context.cookies()).find(({ name }) => name === 'mesh_health_turnstile');
   expect(cookie).toMatchObject({

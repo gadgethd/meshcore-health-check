@@ -1,5 +1,6 @@
 // Asset revision is independent of the release version; bump for shell changes.
-const CACHE_NAME = 'mesh-health-check-pwa-v1.4.3-guided-1';
+const CACHE_NAME = 'mesh-health-check-pwa-v1.4.3-guided-2';
+const PREVIOUS_CACHE_NAME = 'mesh-health-check-pwa-v1.4.3-guided-1';
 const CORE_ASSETS = [
   '/',
   '/app',
@@ -11,6 +12,8 @@ const CORE_ASSETS = [
   '/app.js?v=1.4.3',
   '/check-guidance.js',
   '/design-tokens.css',
+  '/ukmesh-theme/tokens.css',
+  '/ukmesh-navigation.js',
   '/nearest-observers.js',
   '/location-refinement.js',
   '/landing.css',
@@ -37,14 +40,15 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))),
+      Promise.all(keys.filter((key) => key.startsWith('mesh-health-check-pwa-') && key !== CACHE_NAME && key !== PREVIOUS_CACHE_NAME).map((key) => caches.delete(key)))),
   );
   self.clients.claim();
 });
 
 async function cachedResponse(request) {
   try {
-    return await caches.match(request);
+    return await caches.match(request, { cacheName: CACHE_NAME })
+      || await caches.match(request, { cacheName: PREVIOUS_CACHE_NAME });
   } catch {
     return undefined;
   }

@@ -21,7 +21,7 @@
     <link rel="icon" type="image/png" href="/logo.png">
     <link rel="apple-touch-icon" href="/logo.png">
     <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#07111d">
+    <meta name="theme-color" content="#0a1017">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
     <link rel="stylesheet" href="/vendor/maplibre/maplibre-gl.css">
@@ -36,6 +36,7 @@
           <h1 id="hero-title">Shared MeshCore coverage result</h1>
         </div>
         <div class="control-utility-actions">
+  <a class="ukmesh-return" data-ukmesh-home href="https://ukmesh.com/health-check">Back to UKMesh</a>
   <button class="control-button ghost-button" id="ui-theme-toggle" type="button">Light Mode</button>
   <button class="control-button ghost-button hidden" id="install-app-button" type="button">Install App</button>
   <a class="control-button ghost-button hidden" id="external-link" rel="noopener noreferrer" target="_blank">External Link</a>
@@ -288,5 +289,6 @@
     </aside>
     <script src="/vendor/leaflet/leaflet.js" defer></script>
     <script type="module" src="/app.js?v=__APP_VERSION__"></script>
-  </body>
+    <script type="module" src="/ukmesh-navigation.js"></script>
+</body>
 </html>

@@ -21,7 +21,7 @@
     <link rel="icon" type="image/png" href="/logo.png">
     <link rel="apple-touch-icon" href="/logo.png">
     <link rel="manifest" href="/manifest.webmanifest">
-    <meta name="theme-color" content="#07111d">
+    <meta name="theme-color" content="#0a1017">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
     <link rel="stylesheet" href="/vendor/maplibre/maplibre-gl.css">
@@ -32,10 +32,11 @@
     <main class="noc-shell" id="main-content">
       <header class="check-header" data-enter>
         <div class="brand-copy">
-          <p class="eyebrow" id="hero-eyebrow">MeshCore Observer Coverage</p>
-          <h1 id="hero-title">MeshCore radio coverage check</h1>
+          <p class="eyebrow" id="hero-eyebrow">UK Mesh</p>
+          <h1 id="hero-title">Health Check</h1>
         </div>
         <div class="control-utility-actions">
+  <a class="ukmesh-return" data-ukmesh-home href="https://ukmesh.com/health-check">Back to UKMesh</a>
   <button class="control-button ghost-button" id="ui-theme-toggle" type="button">Light Mode</button>
   <button class="control-button ghost-button hidden" id="install-app-button" type="button">Install App</button>
   <a class="control-button ghost-button hidden" id="external-link" rel="noopener noreferrer" target="_blank">External Link</a>
@@ -44,7 +45,7 @@
         <p class="transport-status" id="transport-status" role="status" aria-live="polite">Checking network connection.</p>
       </header>
       <ol class="check-steps" aria-label="Check steps">
-  <li data-check-step="copy"><span class="step-number" aria-hidden="true">1</span> Copy your code</li>
+  <li data-check-step="copy"><span class="step-number" aria-hidden="true">1</span> Generate a code</li>
   <li data-check-step="send"><span class="step-number" aria-hidden="true">2</span> Send to your channel</li>
   <li data-check-step="results"><span class="step-number" aria-hidden="true">3</span> Read observer receipts</li>
 </ol>
@@ -54,10 +55,10 @@
             <div class="session-sequence">
               <p class="panel-label">Your radio message</p>
               <div class="session-code-row">
-                <div class="session-code-block"><div class="session-code" id="session-code">Loading code</div></div>
+                <div class="session-code-block"><div class="session-code" id="session-code">No active code</div></div>
                 <div class="session-code-actions">
                   <button class="control-button primary-button copy-button" id="copy-session-code" type="button">Copy code</button>
-                  <button class="control-button ghost-button" id="new-session-button" type="button">New Code</button>
+                  <button class="control-button ghost-button" id="new-session-button" type="button" disabled>Generate code</button>
                   <button class="control-button ghost-button copy-button" id="share-session" type="button">Share result</button>
                   <div class="code-length-control" id="code-length-control" hidden>
                       <label for="code-length">Code length <output id="code-length-value" for="code-length">6</output></label>
@@ -322,5 +323,6 @@
     </aside>
     <script src="/vendor/leaflet/leaflet.js" defer></script>
     <script type="module" src="/app.js?v=__APP_VERSION__"></script>
-  </body>
+    <script type="module" src="/ukmesh-navigation.js"></script>
+</body>
 </html>

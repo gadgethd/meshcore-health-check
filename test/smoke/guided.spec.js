@@ -8,6 +8,9 @@ for (const width of [1440, 390]) {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto('/app');
     const code = page.locator('#session-code');
+    await expect(code).toHaveText('No active code');
+    await expect(page.getByRole('link', { name: 'Back to UKMesh' })).toBeVisible();
+    await page.getByRole('button', { name: 'Generate code', exact: true }).click();
     await expect(code).toHaveText(/^MHC-[A-F0-9]{6}$/);
     await expect(page.locator('#check-guidance')).toContainText('connection is offline');
     await expect(page.locator('[aria-current="step"]')).toContainText('Send to your channel');

@@ -1,3 +1,5 @@
+@import url("/design-tokens.css");
+
 .nearby-controls {
   margin: 14px 0;
   padding: 16px;
@@ -33,20 +35,20 @@
 .nearby-results li { padding: 3px 0; overflow-wrap: anywhere; }
 
 :root {
-  --bg: #060a11;
-  --bg-deep: #0a1018;
-  --bg-alt: #121a26;
-  --panel: rgba(15, 22, 34, 0.86);
-  --panel-strong: rgba(13, 20, 31, 0.96);
+  --bg: var(--ukmesh-bg, #0a1017);
+  --bg-deep: var(--bg);
+  --bg-alt: var(--ukmesh-raised, #172330);
+  --panel: var(--ukmesh-panel, #101923);
+  --panel-strong: var(--bg-alt);
   --panel-soft: rgba(123, 177, 255, 0.07);
   --panel-overlay: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.01));
-  --line: rgba(173, 196, 228, 0.11);
-  --line-strong: rgba(173, 196, 228, 0.2);
-  --text: #edf2fa;
-  --muted: #8f9fb7;
+  --line: var(--ukmesh-border, #2b3d4c);
+  --line-strong: var(--line);
+  --text: var(--ukmesh-text, #edf5f8);
+  --muted: var(--ukmesh-muted, #a3b8c7);
   --muted-strong: #c5d0df;
-  --accent: #8db6ff;
-  --accent-strong: #dbe7ff;
+  --accent: var(--ukmesh-accent, #4cddf3);
+  --accent-strong: var(--ukmesh-focus, #87ebfa);
   --good: #53adff;
   --good-glow: rgba(83, 173, 255, 0.34);
   --fair: #e2ab45;
@@ -54,11 +56,11 @@
   --poor: #d87adf;
   --poor-glow: rgba(216, 122, 223, 0.3);
   --shadow: 0 24px 90px rgba(0, 0, 0, 0.34);
-  --radius-xl: 26px;
-  --radius-lg: 20px;
+  --radius-xl: var(--ukmesh-radius, 10px);
+  --radius-lg: var(--radius-xl);
   --radius-md: 16px;
   --radius-sm: 12px;
-  --font-sans: "Geist", "Avenir Next", "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  --font-sans: var(--ukmesh-font, system-ui, sans-serif);
   --font-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", ui-monospace, monospace;
   --ring-color: var(--accent-strong);
   color: var(--text);
@@ -77,40 +79,12 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 18% 0%, rgba(141, 182, 255, 0.14), transparent 26%),
-    radial-gradient(circle at 100% 12%, rgba(255, 190, 92, 0.08), transparent 20%),
-    linear-gradient(180deg, #070b12 0%, #0a0f17 52%, #070b12 100%);
+  background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
   overflow-x: hidden;
 }
 
-body::before,
-body::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: -1;
-}
-
-body::before {
-  background:
-    linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-  background-size: 96px 96px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.85), transparent 100%);
-}
-
-body::after {
-  background:
-    radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.08), transparent 24%),
-    radial-gradient(circle at 80% 35%, rgba(255, 255, 255, 0.05), transparent 18%),
-    radial-gradient(circle at 50% 70%, rgba(255, 255, 255, 0.06), transparent 20%);
-  opacity: 0.3;
-  filter: blur(90px);
-}
 
 a {
   color: inherit;
@@ -3190,4 +3164,12 @@ body[data-layout="guided"]::after { display: none; }
 @media (prefers-reduced-motion: reduce) {
   [data-layout="guided"] [data-enter] { animation: none; }
   [data-layout="guided"] .control-button { transition: none; }
+}
+
+.ukmesh-return {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--accent);
+  font-weight: 600;
 }

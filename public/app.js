@@ -115,7 +115,7 @@ const state = {
   sessions: new Map(),
   socket: null,
   socketRetryTimer: 0,
-  sessionRetargetTimer: 0,
+  creatingSession: false,
   refreshInFlight: false,
   sessionRefreshInFlight: false,
   sessionRefreshQueued: false,
@@ -915,10 +915,8 @@ async function copySessionShareLink() {
 }
 
 async function createSession() {
-  if (state.sessionRetargetTimer) {
-    window.clearTimeout(state.sessionRetargetTimer);
-    state.sessionRetargetTimer = 0;
-  }
+  if (!state.snapshot || state.creatingSession) return;
+  state.creatingSession = true;
   ui.newSessionButton.disabled = true;
   try {
     const response = await apiFetch('/api/sessions', {
@@ -949,23 +947,9 @@ async function createSession() {
   } catch (error) {
     ui.sessionInstructions.textContent = error.message;
   } finally {
+    state.creatingSession = false;
     ui.newSessionButton.disabled = false;
   }
-}
-
-function scheduleSessionRetarget() {
-  if (state.sessionRetargetTimer) {
-    window.clearTimeout(state.sessionRetargetTimer);
-  }
-  state.sessionRetargetTimer = window.setTimeout(() => {
-    state.sessionRetargetTimer = 0;
-    const session = currentSession();
-    if (!sessionCanRetarget(session) || !selectionDiffersFromSession(session)) {
-      render();
-      return;
-    }
-    createSession();
-  }, 200);
 }
 
 function currentSession() {
@@ -1165,7 +1149,6 @@ function applyRegionSelection() {
   state.regionSelectionApplied = true;
   state.selectedObserverKeys = observerKeysForRegionSelection(state.snapshot);
   render();
-  scheduleSessionRetarget();
 }
 
 function observerKeysForRegionSelection(snapshot = state.snapshot) {
@@ -1248,7 +1231,6 @@ function renderObserverAllowlist() {
       state.selectedRegion = null;
       state.selectedObserverKeys = [...next];
       render();
-      scheduleSessionRetarget();
     });
     ui.observerAllowlist.appendChild(item);
   }
@@ -1259,6 +1241,7 @@ function renderObserverAllowlist() {
 
 function applySiteBranding(snapshot) {
   const site = snapshot?.site || {};
+  const embedded = window.parent !== window;
   const title = site.title || 'Mesh Health Check';
   const version = String(site.version || '').trim() || '0.0.0';
   const eyebrow = site.eyebrow || 'MeshCore Observer Coverage';
@@ -1266,7 +1249,7 @@ function applySiteBranding(snapshot) {
   const repoUrl = site.repoUrl || 'https://github.com/yellowcooln/meshcore-health-check';
   const changesUrl = site.changesUrl || `${repoUrl}/blob/main/CHANGES.md`;
   const externalUrl = String(site.externalLinkUrl || '').trim();
-  const externalLabel = String(site.externalLinkLabel || '').trim() || 'External Link';
+  const externalLabel = String(site.externalLinkLabel || '').trim() || 'External link';
   const description = site.description
     || 'Generate a test code, send it to the configured channel, and watch observer coverage build in real time.';
   const [prefix, ...suffixParts] = description.split('configured channel');
@@ -1276,7 +1259,7 @@ function applySiteBranding(snapshot) {
   ui.repoNoteLink.href = repoUrl;
   ui.siteVersionNote.href = changesUrl;
   ui.siteVersionNote.textContent = `Version: v${version}`;
-  if (externalUrl) {
+  if (externalUrl && !embedded) {
     ui.externalLink.href = externalUrl;
     ui.externalLink.textContent = externalLabel;
     ui.externalLink.classList.remove('hidden');
@@ -1294,6 +1277,11 @@ function applySiteBranding(snapshot) {
   }
   ui.heroEyebrow.textContent = eyebrow;
   ui.heroTitle.textContent = headline;
+  if (embedded) {
+    ui.heroDescriptionPrefix.textContent = 'Send your code to';
+    ui.heroDescriptionSuffix.textContent = 'to see which observers hear your radio.';
+    return;
+  }
   ui.heroDescriptionPrefix.textContent = (prefix || '').trimEnd() || 'Generate a test code, send it to';
   ui.heroDescriptionSuffix.textContent = (suffix || '').trimStart()
     || 'and watch observer coverage build in real time.';
@@ -1497,7 +1485,6 @@ function selectNearbyObservers(origin, source, prefix = '') {
   state.map.preserveNearbyViewport = source === 'map center';
   state.nearbyMessage = `${prefix}${matches.length} selected within ${radius} ${unit} of ${source}. Reload restores the website default set.`;
   render();
-  scheduleSessionRetarget();
 }
 
 function selectNearbyMapCenter(prefix = '') {
@@ -1955,7 +1942,7 @@ function buildDrawerContent() {
           </section>
           <section class="drawer-card">
             <h3>Operator Instructions</h3>
-            <pre class="drawer-codeblock">${escapeHtml(session?.instructions || 'Create a session to start listening.')}</pre>
+            <pre class="drawer-codeblock">${escapeHtml(session?.instructions || 'Choose your observers, then generate a code.')}</pre>
           </section>
           <section class="drawer-card">
             <h3>Matched Message</h3>
@@ -2207,8 +2194,9 @@ function render() {
   const session = currentSession();
   renderCheckGuidance(document, { session, channel: channelLabel, shared: isSharePage(),
     missing: state.sharedSessionMissing, connected: Boolean(snapshot.mqtt.connected) });
-  ui.newSessionButton.disabled = false;
-  const pendingSelection = Boolean(session && !isSharePage() && selectionDiffersFromSession(session) && !sessionCanRetarget(session));
+  ui.newSessionButton.disabled = state.creatingSession;
+  ui.newSessionButton.textContent = session ? 'Generate new code' : 'Generate code';
+  const pendingSelection = Boolean(session && !isSharePage() && selectionDiffersFromSession(session));
   const nextCodeSelection = document.querySelector('#next-code-selection');
   if (nextCodeSelection) {
     nextCodeSelection.hidden = !pendingSelection;
@@ -2235,7 +2223,7 @@ function render() {
     ui.sessionCode.textContent = 'No active code';
     ui.sessionInstructions.textContent = state.sharedSessionMissing
       ? 'That shared result is no longer available.'
-      : 'Create a session to start listening.';
+      : 'Choose your observers, then generate a code.';
     ui.sessionShareNote.textContent = state.sharedSessionMissing
       ? 'Shared results are removed after their retention window.'
       : retentionNote();
@@ -2330,7 +2318,7 @@ function applySnapshot(snapshot) {
     || previousRegion !== state.selectedRegion
     || !sameKeys(previousObserverKeys, state.selectedObserverKeys)
   ) {
-    scheduleSessionRetarget();
+    render();
   }
 }
 
@@ -2475,13 +2463,7 @@ async function bootstrap() {
   if (!state.snapshot) {
     return;
   }
-  if (isSharedRoute()) {
-    render();
-  } else if (!currentSession() || (sessionCanRetarget(currentSession()) && selectionDiffersFromSession(currentSession()))) {
-    await createSession();
-  } else {
-    render();
-  }
+  render();
   if (!isSharePage()) connectSocket();
 }
 
@@ -2517,7 +2499,6 @@ ui.observerAllowlistClear.addEventListener('click', () => {
     state.regionSelectionApplied = false;
     state.selectedObserverKeys = [];
     render();
-    scheduleSessionRetarget();
     return;
   }
   if (usingDefaultObserverSet()) {
@@ -2525,7 +2506,6 @@ ui.observerAllowlistClear.addEventListener('click', () => {
   }
   state.selectedObserverKeys = [];
   render();
-  scheduleSessionRetarget();
 });
 
 if (ui.uiThemeToggle) {

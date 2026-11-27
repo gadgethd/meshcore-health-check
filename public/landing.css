@@ -1,51 +1,10 @@
 body.landing-body {
   margin: 0;
   min-height: 100vh;
-  overflow: hidden;
-  color: #eaf4ff;
-  font-family: "Geist", "Avenir Next", "Segoe UI Variable Text", "Segoe UI", sans-serif;
-  background:
-    radial-gradient(circle at 16% 18%, rgba(123, 214, 255, 0.2), transparent 26%),
-    radial-gradient(circle at 82% 22%, rgba(103, 244, 161, 0.12), transparent 18%),
-    radial-gradient(circle at 50% 88%, rgba(255, 95, 109, 0.1), transparent 20%),
-    linear-gradient(135deg, #040a12 0%, #08111d 42%, #06101a 100%);
+  color: var(--ukmesh-text, #edf5f8);
+  font-family: var(--ukmesh-font, system-ui, sans-serif);
+  background: var(--landing-background);
   -webkit-text-size-adjust: 100%;
-}
-
-.landing-grid,
-.landing-grid::before,
-.landing-grid::after {
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-}
-
-.landing-grid {
-  background:
-    linear-gradient(rgba(123, 214, 255, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(123, 214, 255, 0.04) 1px, transparent 1px);
-  background-size: 72px 72px;
-  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9), transparent);
-}
-
-.landing-grid::before,
-.landing-grid::after {
-  content: "";
-}
-
-.landing-grid::before {
-  background: radial-gradient(circle, rgba(123, 214, 255, 0.16), transparent 66%);
-  inset: auto auto 10% 62%;
-  width: min(38vw, 520px);
-  height: min(38vw, 520px);
-  filter: blur(14px);
-}
-
-.landing-grid::after {
-  background: linear-gradient(180deg, transparent, rgba(255, 255, 255, 0.04), transparent);
-  opacity: 0.3;
-  transform: translateY(-100%);
-  animation: scan 11s linear infinite;
 }
 
 .landing-shell {
@@ -56,30 +15,15 @@ body.landing-body {
   padding: 24px;
 }
 
-.landing-halo {
-  position: absolute;
-  width: min(44vw, 580px);
-  height: min(44vw, 580px);
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(123, 214, 255, 0.18), transparent 70%);
-  filter: blur(10px);
-  pointer-events: none;
-}
-
 .landing-card {
   position: relative;
   display: grid;
   gap: 22px;
   width: min(760px, 100%);
   padding: 28px;
-  border-radius: 30px;
-  border: 1px solid rgba(142, 182, 255, 0.14);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.015)),
-    rgba(8, 19, 34, 0.76);
-  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.36);
-  backdrop-filter: blur(28px) saturate(140%);
-  -webkit-backdrop-filter: blur(28px) saturate(140%);
+  border-radius: var(--ukmesh-radius, 10px);
+  border: 1px solid var(--ukmesh-border, #2b3d4c);
+  background: var(--landing-panel);
 }
 
 .landing-card::before {
@@ -243,4 +187,14 @@ body.landing-body {
   .landing-panels {
     order: 4;
   }
+}
+
+.landing-shell footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.landing-shell footer a {
+  color: var(--ukmesh-accent, #4cddf3);
 }
