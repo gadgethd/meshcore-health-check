@@ -2026,7 +2026,7 @@ function observerDisplayLabelForKey(observerKey) {
   return String(observer?.name || profile?.name || shortKey(observerKey));
 }
 
-function topObserverKeys(now = Date.now(), matches = observerKeyInDefaultScope) {
+function rankObserverActivity(now, matches = () => true) {
   const dayKeys = new Set(recentUtcDayKeys(OBSERVER_TOP_WINDOW_DAYS, now));
   const ranked = [];
 
@@ -2065,17 +2065,18 @@ function topObserverKeys(now = Date.now(), matches = observerKeyInDefaultScope) 
     return left.key.localeCompare(right.key);
   });
 
-  return ranked.slice(0, OBSERVER_TOP_COUNT).map((entry) => entry.key);
+  return ranked.map((entry) => entry.key);
 }
 
-function defaultObserverTarget(now = Date.now()) {
+function defaultObserverTarget(now = Date.now(), ranked, active) {
   if (!geographicDefaultsEnabled && KNOWN_OBSERVERS.length > 0) {
     return {
       keys: KNOWN_OBSERVERS.filter(observerKeyInDefaultScope),
       source: 'configured',
     };
   }
-  const topKeys = topObserverKeys(now);
+  const topKeys = (ranked ?? rankObserverActivity(now, observerKeyInDefaultScope))
+    .filter(observerKeyInDefaultScope).slice(0, OBSERVER_TOP_COUNT);
   if (topKeys.length > 0) {
     return {
       keys: topKeys,
@@ -2083,7 +2084,7 @@ function defaultObserverTarget(now = Date.now()) {
     };
   }
   return {
-    keys: activeObserverKeys(now).filter(observerKeyInDefaultScope),
+    keys: (active ?? activeObserverKeys(now)).filter(observerKeyInDefaultScope),
     source: 'active-window',
   };
 }
@@ -2101,7 +2102,7 @@ function healthLabel(percent) {
   return 'POOR';
 }
 
-function serializeObserver(observer) {
+function serializeObserver(observer, now = Date.now()) {
   return {
     key: observer.key,
     hash: observer.hash,
@@ -2116,8 +2117,8 @@ function serializeObserver(observer) {
     packetCount: observer.packetCount,
     firstSeenAt: observer.firstSeenAt,
     lastPacketAt: observer.lastPacketAt,
-    isRetained: observerIsRetained(observer),
-    isActive: Date.now() - observer.lastPacketAt <= OBSERVER_ACTIVE_WINDOW_MS,
+    isRetained: observerIsRetained(observer, now),
+    isActive: now - observer.lastPacketAt <= OBSERVER_ACTIVE_WINDOW_MS,
   };
 }
 
@@ -2131,7 +2132,7 @@ function observerIsRetained(observer, now = Date.now()) {
   return now - observer.lastPacketAt <= OBSERVER_RETENTION_MS;
 }
 
-function serializeObserverForKey(observerKey) {
+function serializeObserverForKey(observerKey, now = Date.now()) {
   const observer = ensureObserverRecord(observerKey);
   if (!observer) {
     return {
@@ -2152,12 +2153,11 @@ function serializeObserverForKey(observerKey) {
       isActive: false,
     };
   }
-  return serializeObserver(observer);
+  return serializeObserver(observer, now);
 }
 
-function observerDirectory() {
-  const now = Date.now();
-  const defaultKeys = new Set(defaultObserverTarget().keys);
+function observerDirectory(now, defaultObserverKeys) {
+  const defaultKeys = new Set(defaultObserverKeys);
   return [...observerState.values()]
     .filter((observer) => observerIsRetained(observer, now) && observerKeyInGeographicScope(observer.key))
     .sort((left, right) => {
@@ -2174,7 +2174,34 @@ function observerDirectory() {
       }
       return left.key.localeCompare(right.key);
     })
-    .map(serializeObserver);
+    .map((observer) => serializeObserver(observer, now));
+}
+
+function snapshotObserverRanks(directory, ranked, active) {
+  const byKey = new Map(directory.map((observer) => [observer.key, observer]));
+  const all = { ranked: [], active: [] };
+  const groups = new Map();
+  const regions = new Map();
+  for (const { regionGroup, region } of directory) {
+    if (regionGroup && !groups.has(regionGroup)) groups.set(regionGroup, { ranked: [], active: [] });
+    if (region && !regions.has(region)) regions.set(region, { ranked: [], active: [] });
+  }
+  for (const [kind, keys] of [['ranked', ranked], ['active', active]]) {
+    for (const key of keys) {
+      const observer = byKey.get(key);
+      if (!observer) continue;
+      for (const scope of [all, groups.get(observer.regionGroup), regions.get(observer.region)]) {
+        if (scope && scope[kind].length < OBSERVER_TOP_COUNT) scope[kind].push(key);
+      }
+    }
+  }
+  const top = (scope) => scope.ranked.length ? scope.ranked : scope.active;
+  const topByScope = (scopes) => Object.fromEntries([...scopes].map(([scope, keys]) => [scope, top(keys)]));
+  return {
+    topObserverKeys: top(all),
+    topObserverKeysByGroup: topByScope(groups),
+    topObserverKeysByRegion: topByScope(regions),
+  };
 }
 
 function buildRegionHierarchy(directory) {
@@ -2539,15 +2566,18 @@ function serializeSession(session, request = null) {
 }
 
 function snapshotPayload() {
-  const directory = observerDirectory();
+  const now = Date.now();
+  const ranked = rankObserverActivity(now);
+  const active = activeObserverKeys(now);
+  const defaultTarget = defaultObserverTarget(now, ranked, active);
+  const directory = observerDirectory(now, defaultTarget.keys);
   const activeObservers = directory.filter((observer) => observer.isActive);
-  const defaultTarget = defaultObserverTarget();
-  const defaultObservers = defaultTarget.keys.map((key) => serializeObserverForKey(key));
+  const defaultObservers = defaultTarget.keys.map((key) => serializeObserverForKey(key, now));
   const dashboardBrokerHost = DASH_BROKER_HOST || brokerLabel(MQTT_URL);
   const regionHierarchy = buildRegionHierarchy(directory);
 
   return {
-    serverTime: Date.now(),
+    serverTime: now,
     meshcoreScopes: { enabled: meshcoreScopes.enabled, count: meshcoreScopes.regions.length },
     site: {
       title: APP_TITLE,
@@ -2596,21 +2626,7 @@ function snapshotPayload() {
       retentionSeconds: Math.round(RESULT_RETENTION_MS / 1000),
     },
     defaultRegions,
-    topObserverKeys: (() => {
-      const keys = new Set(directory.map((o) => o.key));
-      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
-      return ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT);
-    })(),
-    topObserverKeysByGroup: Object.fromEntries([...new Set(directory.map((o) => o.regionGroup).filter(Boolean))].map((group) => {
-      const keys = new Set(directory.filter((o) => o.regionGroup === group).map((o) => o.key));
-      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
-      return [group, ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT)];
-    })),
-    topObserverKeysByRegion: Object.fromEntries([...new Set(directory.map((o) => o.region).filter(Boolean))].map((region) => {
-      const keys = new Set(directory.filter((o) => o.region === region).map((o) => o.key));
-      const ranked = topObserverKeys(Date.now(), (key) => keys.has(key));
-      return [region, ranked.length ? ranked : activeObserverKeys().filter((key) => keys.has(key)).slice(0, OBSERVER_TOP_COUNT)];
-    })),
+    ...snapshotObserverRanks(directory, ranked, active),
     defaultObserverKeys: defaultTarget.keys,
     defaultObservers,
     defaultObserverSource: defaultTarget.source,
@@ -3514,7 +3530,7 @@ function broadcastSnapshot(force = false) {
   const now = Date.now();
   if (!force && now - lastSnapshotSentAt < 1000) return;
   lastSnapshotSentAt = now;
-  websocketHub.broadcast({ type: 'snapshot', data: snapshotPayload() });
+  websocketHub.broadcast(() => ({ type: 'snapshot', data: snapshotPayload() }));
 }
 
 function broadcastSessionUpdate(sessionId) {

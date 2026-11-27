@@ -117,8 +117,9 @@ const state = {
   socketRetryTimer: 0,
   creatingSession: false,
   refreshInFlight: false,
-  sessionRefreshInFlight: false,
-  sessionRefreshQueued: false,
+  sessionRefreshInFlight: null,
+  sessionRefreshAll: false,
+  sessionRefreshTargets: new Set(),
   sessionRefreshTimer: 0,
   observerAllowlistSignature: '',
   nearbyRequest: 0,
@@ -2307,37 +2308,24 @@ function applySnapshot(snapshot) {
   if (!state.snapshot && snapshot.defaultRegions?.length === 1) {
     state.selectedRegion = snapshot.defaultRegions[0];
   }
-  const previousRegionGroup = state.selectedRegionGroup;
-  const previousRegion = state.selectedRegion;
-  const previousObserverKeys = state.selectedObserverKeys;
   reconcileRegionSelection(snapshot);
   state.snapshot = snapshot;
-  render();
-  if (
-    previousRegionGroup !== state.selectedRegionGroup
-    || previousRegion !== state.selectedRegion
-    || !sameKeys(previousObserverKeys, state.selectedObserverKeys)
-  ) {
-    render();
-  }
 }
 
-async function refreshTrackedSessions() {
-  if (state.sessionRefreshInFlight) {
-    state.sessionRefreshQueued = true;
-    return;
-  }
-  state.sessionRefreshInFlight = true;
-  try {
-    do {
-      state.sessionRefreshQueued = false;
-      const ids = dedupe([
-        ...state.trackedSessionIds,
-        state.sharedSessionId,
-      ]).slice(0, 8);
-      if (ids.length === 0) {
-        return;
-      }
+function trackedSessionRequestIds() {
+  return dedupe([...state.trackedSessionIds, state.sharedSessionId]).slice(0, 8);
+}
+
+function flushTrackedSessionRefresh() {
+  if (state.sessionRefreshInFlight) return state.sessionRefreshInFlight;
+  let sessionsChanged = false;
+  const drain = async () => {
+    while (state.sessionRefreshAll || state.sessionRefreshTargets.size) {
+      const ids = trackedSessionRequestIds()
+        .filter((id) => state.sessionRefreshAll || state.sessionRefreshTargets.has(id));
+      state.sessionRefreshAll = false;
+      state.sessionRefreshTargets.clear();
+      if (!ids.length) continue;
 
       const response = await apiFetch(`/api/sessions?ids=${encodeURIComponent(ids.join(','))}`);
       if (response.status === 403) {
@@ -2354,6 +2342,7 @@ async function refreshTrackedSessions() {
             state.sessions.delete(result.sessionId);
           }
           removeTrackedSession(result.sessionId);
+          sessionsChanged = true;
           continue;
         }
         if (!result.session) {
@@ -2363,11 +2352,15 @@ async function refreshTrackedSessions() {
           state.sharedSessionMissing = false;
         }
         state.sessions.set(result.session.id, result.session);
+        sessionsChanged = true;
       }
-    } while (state.sessionRefreshQueued);
-  } finally {
-    state.sessionRefreshInFlight = false;
-  }
+    }
+  };
+  state.sessionRefreshInFlight = drain().finally(() => {
+    state.sessionRefreshInFlight = null;
+    if (sessionsChanged) render();
+  });
+  return state.sessionRefreshInFlight;
 }
 
 function showDashboardError() {
@@ -2381,18 +2374,17 @@ function showDashboardError() {
   }
 }
 
-function scheduleTrackedSessionRefresh() {
-  if (state.sessionRefreshTimer) {
-    if (state.sessionRefreshInFlight) {
-      state.sessionRefreshQueued = true;
-    }
-    return;
+function scheduleTrackedSessionRefresh(sessionId) {
+  if (sessionId) {
+    if (!trackedSessionRequestIds().includes(sessionId)) return;
+    state.sessionRefreshTargets.add(sessionId);
+  } else {
+    state.sessionRefreshAll = true;
   }
+  if (state.sessionRefreshTimer || state.sessionRefreshInFlight) return;
   state.sessionRefreshTimer = window.setTimeout(() => {
     state.sessionRefreshTimer = 0;
-    refreshTrackedSessions().then(() => {
-      render();
-    }).catch(() => {
+    flushTrackedSessionRefresh().catch(() => {
       // The next polling cycle will retry without creating an unhandled rejection.
     });
   }, 100);
@@ -2411,8 +2403,12 @@ async function refreshFromServer() {
       return;
     }
     applySnapshot(snapshot);
-    await refreshTrackedSessions();
     render();
+    if (!isSharePage() && !state.socketRetryTimer) connectSocket();
+    state.sessionRefreshAll = true;
+    flushTrackedSessionRefresh().catch(() => {
+      // The next poll still reconciles the tracked session list.
+    });
   } finally {
     state.refreshInFlight = false;
   }
@@ -2442,9 +2438,9 @@ function connectSocket() {
       const message = JSON.parse(event.data);
       if (message.type === 'snapshot') {
         applySnapshot(message.data);
-        scheduleTrackedSessionRefresh();
+        render();
       } else if (message.type === 'session-update') {
-        scheduleTrackedSessionRefresh();
+        scheduleTrackedSessionRefresh(message.data?.sessionId);
       }
     } catch {
       // ignore malformed frames
@@ -2460,11 +2456,6 @@ function connectSocket() {
 async function bootstrap() {
   await registerPwa();
   await refreshFromServer();
-  if (!state.snapshot) {
-    return;
-  }
-  render();
-  if (!isSharePage()) connectSocket();
 }
 
 ui.codeLength?.addEventListener('input', () => {
